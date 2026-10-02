@@ -5,7 +5,7 @@
 [![PowerShell: 7+ / 5.1](https://img.shields.io/badge/PowerShell-5.1%20%7C%207%2B-5391FE.svg?logo=powershell)](https://github.com/Andndre/setup-hostinger-ci)
 [![Laravel: 11 / 12 / 13](https://img.shields.io/badge/Laravel-11%20%7C%2012%20%7C%2013-FF2D20.svg?logo=laravel)](https://laravel.com)
 
-> **Zero-config interactive CLI wizard** to automate Laravel + Vite CI/CD deployment to **Hostinger Business Web Hosting** using GitHub Actions & Rsync over SSH.
+> **Zero-config interactive CLI wizard** to automate Laravel + Vite CI/CD deployment to **Hostinger Web Hosting (Premium, Business, Cloud)** using GitHub Actions & Rsync over SSH.
 
 ---
 
@@ -27,7 +27,7 @@ setup-hostinger-ci
 
 ## 🎯 Why This Tool Exists
 
-Deploying modern Laravel applications (Vite, Inertia, Pest, SQLite/MySQL) to shared environments like Hostinger Business Web Hosting presents unique architectural challenges:
+Deploying modern Laravel applications (Vite, Inertia, Pest, SQLite/MySQL) to shared environments like Hostinger (Premium, Business, or Cloud) presents unique architectural challenges:
 
 1. **Memory & Resource Caps:** Running `npm run build` or `composer install` directly on shared servers frequently gets killed due to RAM/CPU throttling.
 2. **Inode Quota Exhaustion:** Deploying `node_modules` to production burns ~40,000–80,000 inodes of your hosting allocation for no benefit.
@@ -106,7 +106,8 @@ flowchart TD
 
 Before running the wizard, make sure you have:
 
-1. **Hostinger Business Web Hosting:**
+1. **Hostinger Hosting with SSH Access (Premium, Business, or Cloud):**
+   * *(Note: Hostinger's entry-level "Single" plan does not include SSH access).*
    * SSH Access enabled in hPanel.
    * Default Hostinger SSH port is **65002**.
    * Your local public key (`~/.ssh/id_ed25519.pub`) added under **SSH Access $\rightarrow$ Authorized Keys** in hPanel.
