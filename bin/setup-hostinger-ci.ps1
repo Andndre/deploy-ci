@@ -177,7 +177,7 @@ if ($toolsFound.Count -gt 0) {
 # ----------------------------------------------------
 # 4. Wizard Interaktif (Jika parameter tidak diisi)
 # ----------------------------------------------------
-function Prompt-WithDefault {
+function Read-InputWithDefault {
     param (
         [string]$Message,
         [string]$DefaultValue,
@@ -202,7 +202,7 @@ function Prompt-WithDefault {
     }
 }
 
-function Prompt-YesNo {
+function Confirm-Choice {
     param (
         [string]$Message,
         [bool]$DefaultYes = $true
@@ -221,12 +221,12 @@ if (-not $NonInteractive) {
 
     # Branch
     if ([string]::IsNullOrWhiteSpace($Branch)) {
-        $Branch = Prompt-WithDefault -Message "Target Git Branch untuk deploy otomatis" -DefaultValue $detectedBranch
+        $Branch = Read-InputWithDefault -Message "Target Git Branch untuk deploy otomatis" -DefaultValue $detectedBranch
     }
 
     # PHP Version
     if ([string]::IsNullOrWhiteSpace($PhpVersion)) {
-        $PhpVersion = Prompt-WithDefault -Message "Versi PHP di Hostinger" -DefaultValue $detectedPhp
+        $PhpVersion = Read-InputWithDefault -Message "Versi PHP di Hostinger" -DefaultValue $detectedPhp
     }
 
     # Pipeline Type: Gated vs Lean
@@ -237,30 +237,30 @@ if (-not $NonInteractive) {
         $useGated = $false
     } else {
         $suggestGated = ($hasPest -or $hasPhpUnit -or $hasPint -or $hasEslint)
-        $useGated = Prompt-YesNo -Message "Aktifkan Gated Pipeline (jalankan Linting & Automated Test sebelum deploy)?" -DefaultYes $suggestGated
+        $useGated = Confirm-Choice -Message "Aktifkan Gated Pipeline (jalankan Linting & Automated Test sebelum deploy)?" -DefaultYes $suggestGated
     }
 
     # Migration
     if (-not $PSBoundParameters.ContainsKey('IncludeMigration')) {
-        $IncludeMigration = Prompt-YesNo -Message "Otomatis jalankan 'php artisan migrate --force' setelah deployment?" -DefaultYes $false
+        $IncludeMigration = Confirm-Choice -Message "Otomatis jalankan 'php artisan migrate --force' setelah deployment?" -DefaultYes $false
     }
 
     # Hostinger SSH Host / IP
     if ([string]::IsNullOrWhiteSpace($SshHost)) {
         $defaultHost = if ($cachedConfig.SshHost) { $cachedConfig.SshHost } else { "" }
-        $SshHost = Prompt-WithDefault -Message "Hostinger SSH Host / IP" -DefaultValue $defaultHost -Required $true
+        $SshHost = Read-InputWithDefault -Message "Hostinger SSH Host / IP" -DefaultValue $defaultHost -Required $true
     }
 
     # Hostinger SSH User
     if ([string]::IsNullOrWhiteSpace($SshUser)) {
         $defaultUser = if ($cachedConfig.SshUser) { $cachedConfig.SshUser } else { "" }
-        $SshUser = Prompt-WithDefault -Message "Hostinger SSH User" -DefaultValue $defaultUser -Required $true
+        $SshUser = Read-InputWithDefault -Message "Hostinger SSH User" -DefaultValue $defaultUser -Required $true
     }
 
     # Hostinger SSH Port
     if ($SshPort -le 0) {
         $defaultPort = if ($cachedConfig.SshPort) { [string]$cachedConfig.SshPort } else { "65002" }
-        $enteredPort = Prompt-WithDefault -Message "Hostinger SSH Port" -DefaultValue $defaultPort
+        $enteredPort = Read-InputWithDefault -Message "Hostinger SSH Port" -DefaultValue $defaultPort
         $SshPort = [int]$enteredPort
     }
 
@@ -271,7 +271,7 @@ if (-not $NonInteractive) {
             $rsaKey = Join-Path $HOME ".ssh\id_rsa"
             if (Test-Path $rsaKey) { $defaultKey = $rsaKey }
         }
-        $SshKeyPath = Prompt-WithDefault -Message "Path SSH Private Key lokal" -DefaultValue $defaultKey -Required $true
+        $SshKeyPath = Read-InputWithDefault -Message "Path SSH Private Key lokal" -DefaultValue $defaultKey -Required $true
     }
 
     # Target Directory di Hostinger (Auto-infer domain folder)
@@ -284,7 +284,7 @@ if (-not $NonInteractive) {
         } else {
             ""
         }
-        $TargetDir = Prompt-WithDefault -Message "Path TARGET_DIR di Hostinger" -DefaultValue $defaultTarget -Required $true
+        $TargetDir = Read-InputWithDefault -Message "Path TARGET_DIR di Hostinger" -DefaultValue $defaultTarget -Required $true
     }
 } else {
     # Non-interactive fallback
