@@ -3,13 +3,13 @@
     Interactive & Adaptive CI/CD Generator for Laravel on Hostinger (GitHub Actions).
 
 .DESCRIPTION
-    Skrip interaktif dan adaptif untuk menyiapkan GitHub Actions CI/CD ke Hostinger:
-    - Cukup jalankan 'setup-hostinger-ci' tanpa argumen untuk wizard interaktif.
-    - Otomatis mendeteksi versi PHP, Node, branch, dan tools (Pest, PHPUnit, Pint, ESLint, Wayfinder).
-    - Menawarkan pilihan Lean Deploy vs Gated Quality Pipeline (CI Test/Lint -> CD Deploy).
-    - Mengingat konfigurasi SSH Hostinger terakhir (~/.hostinger-ci.json) agar tidak perlu input ulang.
-    - Mengamankan file database SQLite (*.sqlite*) dan user uploads (storage/**) dari penghapusan rsync.
-    - Otomatis un-track public/build dari Git dan mengunggah Secrets ke GitHub via 'gh' CLI.
+    Zero-config interactive CLI wizard to automate Laravel + Vite CI/CD deployment to Hostinger:
+    - Simply run 'setup-hostinger-ci' with no arguments for the guided interactive wizard.
+    - Automatically detects PHP version, Node, Git branch, and tools (Pest, PHPUnit, Pint, ESLint, Wayfinder).
+    - Offers Lean Deploy vs Gated Quality Pipeline (CI Test/Lint -> CD Deploy).
+    - Remembers last used Hostinger SSH credentials (~/.hostinger-ci.json) for instant re-use across multiple domains.
+    - Protects production SQLite databases (*.sqlite*) and user uploads (storage/**) from Rsync deletion.
+    - Automatically untracks public/build from Git and provisions GitHub Secrets via 'gh' CLI.
 #>
 
 [CmdletBinding()]
@@ -53,21 +53,21 @@ Write-Host "  Hostinger Laravel CI/CD Wizard (GitHub Actions v2)" -ForegroundCol
 Write-Host "========================================================`n" -ForegroundColor Cyan
 
 # ----------------------------------------------------
-# 1. Validasi Prasyarat Dasar
+# 1. Validate Prerequisites
 # ----------------------------------------------------
 if (-not (Test-Path "artisan")) {
-    Write-Error "ERROR: Perintah ini HARUS dijalankan dari root direktori project Laravel (file 'artisan' tidak ditemukan)."
+    Write-Error "ERROR: This command MUST be run from the root directory of a Laravel project ('artisan' file not found)."
     exit 1
 }
 
 $isGit = git rev-parse --is-inside-work-tree 2>$null
 if ($LASTEXITCODE -ne 0 -or $isGit -ne "true") {
-    Write-Error "ERROR: Direktori saat ini bukan git repository. Jalankan 'git init' dan hubungkan ke GitHub terlebih dahulu."
+    Write-Error "ERROR: Current directory is not a Git repository. Run 'git init' and connect to GitHub first."
     exit 1
 }
 
 # ----------------------------------------------------
-# 2. Cache Hostinger Config Helper (~/.hostinger-ci.json)
+# 2. Hostinger Config Cache Helper (~/.hostinger-ci.json)
 # ----------------------------------------------------
 $configCacheFile = Join-Path $HOME ".hostinger-ci.json"
 $cachedConfig = @{}
@@ -80,9 +80,9 @@ if (Test-Path $configCacheFile) {
 }
 
 # ----------------------------------------------------
-# 3. Deteksi Lingkungan & Dependensi Otomatis
+# 3. Automatic Project & Environment Inspection
 # ----------------------------------------------------
-Write-Host "[1/6] Mendeteksi Konfigurasi Proyek..." -ForegroundColor Gray
+Write-Host "[1/6] Inspecting Project Configuration..." -ForegroundColor Gray
 
 # A. Branch
 $detectedBranch = "main"
@@ -91,7 +91,7 @@ if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($currentGitBranch
     $detectedBranch = $currentGitBranch.Trim()
 }
 
-# B. Versi PHP dari composer.json
+# B. PHP Version from composer.json
 $detectedPhp = "8.3"
 $hasPest = $false
 $hasPhpUnit = $false
@@ -115,11 +115,11 @@ if (Test-Path "composer.json") {
         if ($devDeps -contains "phpunit/phpunit") { $hasPhpUnit = $true }
         if ($devDeps -contains "laravel/pint") { $hasPint = $true }
     } catch {
-        Write-Warning "Gagal mem-parse composer.json untuk deteksi otomatis."
+        Write-Warning "Failed to parse composer.json for auto-detection."
     }
 }
 
-# C. Node & Frontend Linters dari package.json
+# C. Node & Frontend Linters from package.json
 $detectedNode = "22"
 if (Test-Path ".nvmrc") {
     $nvmVersion = (Get-Content ".nvmrc" -Raw).Trim()
@@ -155,7 +155,7 @@ if (Test-Path "package.json") {
             $hasWayfinder = $true
         }
     } catch {
-        Write-Warning "Gagal mem-parse package.json."
+        Write-Warning "Failed to parse package.json."
     }
 }
 
@@ -166,16 +166,16 @@ if ($hasPest) { $toolsFound += "Pest Tests" } elseif ($hasPhpUnit) { $toolsFound
 if ($hasWayfinder) { $toolsFound += "Wayfinder/Ziggy Generator" }
 
 Write-Host "  -> Git Branch       : $detectedBranch" -ForegroundColor White
-Write-Host "  -> Versi PHP        : $detectedPhp" -ForegroundColor White
-Write-Host "  -> Versi Node       : $detectedNode" -ForegroundColor White
+Write-Host "  -> PHP Version      : $detectedPhp" -ForegroundColor White
+Write-Host "  -> Node Version     : $detectedNode" -ForegroundColor White
 if ($toolsFound.Count -gt 0) {
-    Write-Host "  -> Tools Terdeteksi : $($toolsFound -join ', ')" -ForegroundColor Green
+    Write-Host "  -> Detected Tools   : $($toolsFound -join ', ')" -ForegroundColor Green
 } else {
-    Write-Host "  -> Tools Terdeteksi : Tidak ada test runner / linter otomatis" -ForegroundColor DarkGray
+    Write-Host "  -> Detected Tools   : None (no automated test runner or linter found)" -ForegroundColor DarkGray
 }
 
 # ----------------------------------------------------
-# 4. Wizard Interaktif (Jika parameter tidak diisi)
+# 4. Interactive Wizard (When parameters are not passed)
 # ----------------------------------------------------
 function Read-InputWithDefault {
     param (
@@ -197,7 +197,7 @@ function Read-InputWithDefault {
             if (-not $Required) {
                 return ""
             }
-            Write-Error "ERROR: Akhir dari input (EOF) tercapai saat menunggu input wajib: '$Message'."
+            Write-Error "ERROR: End of input (EOF) reached while waiting for required input: '$Message'."
             exit 1
         }
 
@@ -208,12 +208,12 @@ function Read-InputWithDefault {
             if (-not $Required) {
                 return ""
             }
-            Write-Host "  [!] Input tidak boleh kosong." -ForegroundColor Red
+            Write-Host "  [!] Input cannot be empty." -ForegroundColor Red
         } else {
             return $inputVal.Trim()
         }
     }
-    Write-Error "ERROR: Terlalu banyak percobaan input kosong untuk: '$Message'."
+    Write-Error "ERROR: Too many empty input attempts for: '$Message'."
     exit 1
 }
 
@@ -232,16 +232,16 @@ function Confirm-Choice {
 }
 
 if (-not $NonInteractive) {
-    Write-Host "`n[2/6] Wizard Konfigurasi Deployment..." -ForegroundColor Gray
+    Write-Host "`n[2/6] Interactive Deployment Wizard..." -ForegroundColor Gray
 
     # Branch
     if ([string]::IsNullOrWhiteSpace($Branch)) {
-        $Branch = Read-InputWithDefault -Message "Target Git Branch untuk deploy otomatis" -DefaultValue $detectedBranch
+        $Branch = Read-InputWithDefault -Message "Target Git branch for automated deployment" -DefaultValue $detectedBranch
     }
 
     # PHP Version
     if ([string]::IsNullOrWhiteSpace($PhpVersion)) {
-        $PhpVersion = Read-InputWithDefault -Message "Versi PHP di Hostinger" -DefaultValue $detectedPhp
+        $PhpVersion = Read-InputWithDefault -Message "PHP version on Hostinger" -DefaultValue $detectedPhp
     }
 
     # Pipeline Type: Gated vs Lean
@@ -252,12 +252,12 @@ if (-not $NonInteractive) {
         $useGated = $false
     } else {
         $suggestGated = ($hasPest -or $hasPhpUnit -or $hasPint -or $hasEslint)
-        $useGated = Confirm-Choice -Message "Aktifkan Gated Pipeline (jalankan Linting & Automated Test sebelum deploy)?" -DefaultYes $suggestGated
+        $useGated = Confirm-Choice -Message "Enable Gated Pipeline (run Linting & Automated Tests prior to deployment)?" -DefaultYes $suggestGated
     }
 
     # Migration
     if (-not $PSBoundParameters.ContainsKey('IncludeMigration')) {
-        $IncludeMigration = Confirm-Choice -Message "Otomatis jalankan 'php artisan migrate --force' setelah deployment?" -DefaultYes $false
+        $IncludeMigration = Confirm-Choice -Message "Automatically run 'php artisan migrate --force' after deployment?" -DefaultYes $false
     }
 
     # Hostinger SSH Host / IP
@@ -286,10 +286,10 @@ if (-not $NonInteractive) {
             $rsaKey = Join-Path $HOME ".ssh\id_rsa"
             if (Test-Path $rsaKey) { $defaultKey = $rsaKey }
         }
-        $SshKeyPath = Read-InputWithDefault -Message "Path SSH Private Key lokal" -DefaultValue $defaultKey -Required $true
+        $SshKeyPath = Read-InputWithDefault -Message "Path to local SSH Private Key" -DefaultValue $defaultKey -Required $true
     }
 
-    # Target Directory di Hostinger (Auto-infer domain folder)
+    # Target Directory on Hostinger (Auto-infer domain folder)
     if ([string]::IsNullOrWhiteSpace($TargetDir)) {
         $currentDirName = (Get-Item .).Name
         $defaultTarget = if (-not [string]::IsNullOrWhiteSpace($SshUser)) {
@@ -299,7 +299,7 @@ if (-not $NonInteractive) {
         } else {
             ""
         }
-        $TargetDir = Read-InputWithDefault -Message "Path TARGET_DIR di Hostinger" -DefaultValue $defaultTarget -Required $true
+        $TargetDir = Read-InputWithDefault -Message "Path to TARGET_DIR on Hostinger" -DefaultValue $defaultTarget -Required $true
     }
 } else {
     # Non-interactive fallback
@@ -310,7 +310,7 @@ if (-not $NonInteractive) {
     $useGated = ($WithTests.IsPresent -or ($hasPest -and -not $WithoutTests.IsPresent))
 }
 
-# Simpan host/user/port ke cache lokal untuk kenyamanan proyek berikutnya
+# Cache host/user/port locally for frictionless setup of subsequent projects
 try {
     $saveCache = @{
         SshHost   = $SshHost
@@ -322,9 +322,9 @@ try {
 } catch {}
 
 # ----------------------------------------------------
-# 5. Membersihkan pelacakan Git public/build
+# 5. Clean up Git tracking for public/build
 # ----------------------------------------------------
-Write-Host "`n[3/6] Memeriksa .gitignore & Git Index..." -ForegroundColor Gray
+Write-Host "`n[3/6] Inspecting .gitignore & Git Index..." -ForegroundColor Gray
 $gitignoreFile = ".gitignore"
 if (Test-Path $gitignoreFile) {
     $gitignoreContent = Get-Content $gitignoreFile -Raw
@@ -332,30 +332,30 @@ if (Test-Path $gitignoreFile) {
         if (-not $DryRun) {
             Add-Content -Path $gitignoreFile -Value "`n/public/build"
         }
-        Write-Host "  -> '/public/build' ditambahkan ke .gitignore" -ForegroundColor Green
+        Write-Host "  -> '/public/build' added to .gitignore" -ForegroundColor Green
     } else {
-        Write-Host "  -> '/public/build' sudah ada di .gitignore" -ForegroundColor DarkGray
+        Write-Host "  -> '/public/build' already present in .gitignore" -ForegroundColor DarkGray
     }
 } else {
     if (-not $DryRun) {
         Set-Content -Path $gitignoreFile -Value "/public/build"
     }
-    Write-Host "  -> File .gitignore dibuat dengan '/public/build'" -ForegroundColor Green
+    Write-Host "  -> Created .gitignore with '/public/build'" -ForegroundColor Green
 }
 
 git ls-files --error-unmatch public/build 2>$null | Out-Null
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "  -> Menghapus public/build dari cache Git..." -ForegroundColor Yellow
+    Write-Host "  -> Removing public/build from Git tracking cache..." -ForegroundColor Yellow
     if (-not $DryRun) {
         git rm -r --cached public/build 2>$null | Out-Null
     }
-    Write-Host "  -> public/build berhasil di-untrack dari Git (file fisik tetap ada)." -ForegroundColor Green
+    Write-Host "  -> public/build successfully untracked from Git (physical files preserved)." -ForegroundColor Green
 }
 
 # ----------------------------------------------------
-# 6. Menghasilkan Workflow GitHub Actions
+# 6. Generate GitHub Actions Workflow
 # ----------------------------------------------------
-Write-Host "`n[4/6] Menyiapkan Workflow GitHub Actions..." -ForegroundColor Gray
+Write-Host "`n[4/6] Generating GitHub Actions Workflow..." -ForegroundColor Gray
 
 $migrationCommand = ""
 if ($IncludeMigration) {
@@ -569,51 +569,51 @@ if (-not $DryRun) {
         New-Item -ItemType Directory -Path $workflowDir -Force | Out-Null
     }
     Set-Content -Path $workflowFile -Value $workflowContent -Encoding UTF8
-    Write-Host "  -> File workflow tersimpan di: $workflowFile" -ForegroundColor Green
+    Write-Host "  -> Workflow file saved at: $workflowFile" -ForegroundColor Green
 } else {
-    Write-Host "  -> [DryRun] Workflow akan disimpan di: $workflowFile" -ForegroundColor Cyan
+    Write-Host "  -> [DryRun] Workflow will be saved at: $workflowFile" -ForegroundColor Cyan
 }
 
 # ----------------------------------------------------
-# 7. Konfigurasi GitHub Secrets via 'gh' CLI
+# 7. Configure GitHub Secrets via 'gh' CLI
 # ----------------------------------------------------
-Write-Host "`n[5/6] Mengonfigurasi GitHub Secrets..." -ForegroundColor Gray
+Write-Host "`n[5/6] Configuring GitHub Secrets..." -ForegroundColor Gray
 if ($SkipSecrets) {
-    Write-Host "  -> [SkipSecrets] Konfigurasi secrets GitHub dilewati." -ForegroundColor Yellow
+    Write-Host "  -> [SkipSecrets] GitHub secrets configuration skipped." -ForegroundColor Yellow
 } else {
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-        Write-Warning "GitHub CLI (gh) tidak terdeteksi. Silakan pasang GitHub Secrets secara manual di repository."
+        Write-Warning "GitHub CLI (gh) not detected. Please configure GitHub Secrets manually in your repository settings."
     } else {
         if (-not (Test-Path $SshKeyPath)) {
-            Write-Error "ERROR: SSH Private Key tidak ditemukan di: $SshKeyPath"
+            Write-Error "ERROR: SSH Private Key not found at: $SshKeyPath"
             exit 1
         }
         $privateKeyContent = Get-Content $SshKeyPath -Raw
 
         if ($DryRun) {
-            Write-Host "  -> [DryRun] Secrets yang akan dikirim via gh CLI:" -ForegroundColor Cyan
+            Write-Host "  -> [DryRun] Secrets to be uploaded via gh CLI:" -ForegroundColor Cyan
             Write-Host "     - HOSTINGER_SSH_HOST: $SshHost"
             Write-Host "     - HOSTINGER_SSH_USER: $SshUser"
             Write-Host "     - HOSTINGER_SSH_PORT: $SshPort"
             Write-Host "     - HOSTINGER_TARGET_DIR: $TargetDir"
             Write-Host "     - HOSTINGER_SSH_KEY: [Private Key from $SshKeyPath]"
         } else {
-            Write-Host "  -> Mengirim secrets ke repository GitHub..." -ForegroundColor Cyan
+            Write-Host "  -> Uploading secrets to GitHub repository..." -ForegroundColor Cyan
             gh secret set HOSTINGER_SSH_HOST --body "$SshHost"
             gh secret set HOSTINGER_SSH_USER --body "$SshUser"
             gh secret set HOSTINGER_SSH_PORT --body "$SshPort"
             gh secret set HOSTINGER_TARGET_DIR --body "$TargetDir"
             gh secret set HOSTINGER_SSH_KEY --body "$privateKeyContent"
-            Write-Host "  -> Semua Secrets berhasil disimpan di GitHub!" -ForegroundColor Green
+            Write-Host "  -> All Secrets successfully configured on GitHub!" -ForegroundColor Green
         }
     }
 }
 
 # ----------------------------------------------------
-# 8. Selesai
+# 8. Complete
 # ----------------------------------------------------
-Write-Host "`n[6/6] Selesai!" -ForegroundColor Green
-Write-Host "Untuk mengaktifkan deployment, jalankan:" -ForegroundColor Cyan
+Write-Host "`n[6/6] Done!" -ForegroundColor Green
+Write-Host "To activate automated deployment, run:" -ForegroundColor Cyan
 Write-Host "  git add .gitignore .github/workflows/deploy.yml" -ForegroundColor White
 Write-Host "  git commit -m `"ci: setup automated hostinger deployment`"" -ForegroundColor White
 Write-Host "  git push origin $Branch`n" -ForegroundColor White
