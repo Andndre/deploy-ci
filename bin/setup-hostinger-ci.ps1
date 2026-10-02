@@ -184,10 +184,23 @@ function Read-InputWithDefault {
         [bool]$Required = $false
     )
 
-    while ($true) {
+    $attempts = 0
+    while ($attempts -lt 5) {
+        $attempts++
         $promptText = if (-not [string]::IsNullOrWhiteSpace($DefaultValue)) { "$Message [$DefaultValue]" } else { $Message }
         $inputVal = Read-Host -Prompt $promptText
         
+        if ($null -eq $inputVal) {
+            if (-not [string]::IsNullOrWhiteSpace($DefaultValue)) {
+                return $DefaultValue
+            }
+            if (-not $Required) {
+                return ""
+            }
+            Write-Error "ERROR: Akhir dari input (EOF) tercapai saat menunggu input wajib: '$Message'."
+            exit 1
+        }
+
         if ([string]::IsNullOrWhiteSpace($inputVal)) {
             if (-not [string]::IsNullOrWhiteSpace($DefaultValue)) {
                 return $DefaultValue
@@ -200,6 +213,8 @@ function Read-InputWithDefault {
             return $inputVal.Trim()
         }
     }
+    Write-Error "ERROR: Terlalu banyak percobaan input kosong untuk: '$Message'."
+    exit 1
 }
 
 function Confirm-Choice {
