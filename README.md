@@ -62,36 +62,36 @@ Mendeploy Laravel modern (Vite, Inertia, Pest, SQLite/MySQL) ke shared hosting s
 
 ```mermaid
 flowchart TD
-    subgraph GitHub Runner [GitHub Actions Runner]
-        A[Git Push / PR] --> B[Checkout Code]
-        B --> C[Setup PHP 8.3 & pdo_sqlite / pdo_mysql]
-        C --> D[Setup Node.js 22 & npm ci]
+    subgraph GitHubRunner ["GitHub Actions Runner"]
+        A["Git Push / PR"] --> B["Checkout Code"]
+        B --> C["Setup PHP 8.3 & pdo_sqlite / pdo_mysql"]
+        C --> D["Setup Node.js 22 & npm ci"]
         
-        subgraph verify [Job 1: verify (Quality Gate)]
-            E[Generate Wayfinder/Frontend Types]
-            F[Laravel Pint Code Style]
-            G[ESLint Frontend Check]
-            H[Automated Tests: Pest / PHPUnit]
+        subgraph verifyJob ["Job 1: verify (Quality Gate)"]
+            E["Generate Wayfinder/Frontend Types"]
+            F["Laravel Pint Code Style"]
+            G["ESLint Frontend Check"]
+            H["Automated Tests: Pest / PHPUnit"]
             E --> F --> G --> H
         end
         
-        D --> verify
+        D --> verifyJob
         
-        subgraph deploy [Job 2: deploy (Hanya di Push ke Main)]
-            I[composer install --no-dev]
-            J[npm run build: Vite Production]
-            K[Rsync over SSH Port 65002\nExclude storage & SQLite]
+        subgraph deployJob ["Job 2: deploy (Hanya di Push ke Main)"]
+            I["composer install --no-dev"]
+            J["npm run build: Vite Production"]
+            K["Rsync over SSH Port 65002<br/>Exclude storage & SQLite"]
             I --> J --> K
         end
         
-        H -->|Semua Test Pass| deploy
+        H -->|Semua Test Pass| deployJob
     end
 
-    subgraph Hostinger [Hostinger Shared Hosting]
-        L[(Live App Files)]
-        M[(Production SQLite / MySQL)]
-        N[(User Uploads /storage)]
-        O[Artisan: optimize:clear\nconfig:cache, route:cache, view:cache]
+    subgraph HostingerServer ["Hostinger Shared Hosting"]
+        L[("Live App Files")]
+        M[("Production SQLite / MySQL")]
+        N[("User Uploads /storage")]
+        O["Artisan: optimize:clear<br/>config:cache, route:cache, view:cache"]
         
         K --> L
         K -.->|Protected / Not Overwritten| M
