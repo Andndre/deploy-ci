@@ -67,9 +67,9 @@ class Deployment:
         self.destination = f"{user}@{host}"
         self.rsync_destination = f"{user}@[{host}]" if ":" in host else self.destination
         self.temp = Path(self.env.get("RUNNER_TEMP", tempfile.gettempdir()))
-        self.key = self.temp / "hostinger-ci-key"
-        self.known_hosts = self.temp / "hostinger-ci-known-hosts"
-        self.state = self.temp / "hostinger-ci-run.json"
+        self.key = self.temp / "deploy-ci-key"
+        self.known_hosts = self.temp / "deploy-ci-known-hosts"
+        self.state = self.temp / "deploy-ci-run.json"
         self.ssh = ["ssh", "-p", port, "-i", str(self.key), "-o", "BatchMode=yes",
                     "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=20",
                     "-o", f"UserKnownHostsFile={self.known_hosts}"]

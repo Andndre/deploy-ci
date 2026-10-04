@@ -41,7 +41,7 @@ def fetch(url, directory, index, expected=None, contains=""):
     record = {"time_utc": datetime.now(timezone.utc).isoformat(), "url": url}
     body = b""
     try:
-        request = Request(url, headers={"User-Agent": "hostinger-ci-verifier/1.0", "Accept-Encoding": "identity"})
+        request = Request(url, headers={"User-Agent": "deploy-ci-verifier/1.0", "Accept-Encoding": "identity"})
         try:
             response = urlopen(request, timeout=30)
         except HTTPError as error:

@@ -1,22 +1,22 @@
 <#
 .SYNOPSIS
-    One-liner automated installer for setup-hostinger-ci on Windows.
+    One-liner automated installer for deploy-ci on Windows.
 
 .USAGE
-    irm https://raw.githubusercontent.com/Andndre/setup-hostinger-ci/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/Andndre/deploy-ci/main/install.ps1 | iex
 #>
 
 $ErrorActionPreference = "Stop"
 
 $repoOwner = "Andndre"
-$repoName  = "setup-hostinger-ci"
+$repoName  = "deploy-ci"
 $branch    = "main"
 $baseUrl   = "https://raw.githubusercontent.com/$repoOwner/$repoName/$branch"
 
-$installDir = Join-Path $HOME ".setup-hostinger-ci\bin"
+$installDir = Join-Path $HOME ".deploy-ci\bin"
 
 Write-Host "`n========================================================" -ForegroundColor Cyan
-Write-Host "  Installing setup-hostinger-ci CLI Tool" -ForegroundColor Cyan
+Write-Host "  Installing deploy-ci CLI Tool" -ForegroundColor Cyan
 Write-Host "========================================================`n" -ForegroundColor Cyan
 
 # 1. Create installation directory if it does not exist
@@ -30,8 +30,8 @@ if (-not (Test-Path $installDir)) {
 # 2. Download executable scripts from GitHub
 Write-Host "[2/4] Downloading CLI scripts from GitHub..." -ForegroundColor Gray
 $files = @(
-    "setup-hostinger-ci.cmd",
-    "setup-hostinger-ci.ps1",
+    "deploy-ci.cmd",
+    "deploy-ci.ps1",
     "generate-workflow.ps1",
     "deploy.py",
     "remote-deploy.sh",
@@ -88,5 +88,5 @@ Write-Host "To get started:" -ForegroundColor White
 Write-Host "1. Open a new terminal window (PowerShell, CMD, or Git Bash)." -ForegroundColor Gray
 Write-Host "2. Navigate to your Laravel project root directory." -ForegroundColor Gray
 Write-Host "3. Run the command:`n" -ForegroundColor Gray
-Write-Host "     setup-hostinger-ci`n" -ForegroundColor Yellow
+Write-Host "     deploy-ci`n" -ForegroundColor Yellow
 Write-Host "Repository: https://github.com/$repoOwner/$repoName`n" -ForegroundColor DarkGray

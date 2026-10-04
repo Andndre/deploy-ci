@@ -1,13 +1,17 @@
-# setup-hostinger-ci
+# deploy-ci
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform: Windows](https://img.shields.io/badge/Platform-Windows-0078D6.svg?logo=windows)](https://github.com/Andndre/setup-hostinger-ci)
-[![PowerShell: 7+ / 5.1](https://img.shields.io/badge/PowerShell-5.1%20%7C%207%2B-5391FE.svg?logo=powershell)](https://github.com/Andndre/setup-hostinger-ci)
+[![Platform: Windows](https://img.shields.io/badge/Platform-Windows-0078D6.svg?logo=windows)](https://github.com/Andndre/deploy-ci)
+[![PowerShell: 7+ / 5.1](https://img.shields.io/badge/PowerShell-5.1%20%7C%207%2B-5391FE.svg?logo=powershell)](https://github.com/Andndre/deploy-ci)
 [![Laravel: 11 / 12 / 13](https://img.shields.io/badge/Laravel-11%20%7C%2012%20%7C%2013-FF2D20.svg?logo=laravel)](https://laravel.com)
 
 > Interactive CLI wizard for Laravel + Vite and static sites on Hostinger, using GitHub Actions and asset-safe Rsync over SSH.
 
+Deploy CI is an independent community project by Agung Andre. It is not affiliated with, sponsored by, or endorsed by Hostinger. Hostinger is a trademark of its respective owner; references describe hosting compatibility.
+
 This is a deployment workflow generator for developers familiar with Git and SSH. Installation can be one command; preparing a production hosting account is a separate task. This tool does not provision the server, guarantee zero downtime, or automatically roll back application files or database migrations.
+
+Use it only with repositories, hosting accounts and verification endpoints you own or are authorized to access. Your hosting plan must support SSH, and deployments must stay within the provider's resource and usage limits. Building on GitHub reduces hosting build load; it does not bypass hosting quotas. See the [Hostinger Hosting Agreement](https://www.hostinger.com/legal/hosting-agreement) and [GitHub Actions terms](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features).
 
 ---
 
@@ -16,13 +20,13 @@ This is a deployment workflow generator for developers familiar with Git and SSH
 Open PowerShell on your Windows machine and run:
 
 ```powershell
-irm https://raw.githubusercontent.com/Andndre/setup-hostinger-ci/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Andndre/deploy-ci/main/install.ps1 | iex
 ```
 
 Once installed, open a terminal (PowerShell, CMD, or Git Bash) in the root of any Laravel project, and run:
 
 ```text
-setup-hostinger-ci
+deploy-ci
 ```
 
 ---
@@ -37,7 +41,7 @@ Deploying modern Laravel applications (Vite, Inertia, Pest, SQLite/MySQL) to sha
 4. **Git Repository Bloat:** Committing `public/build` causes repository bloat and endless merge conflicts whenever assets are compiled.
 5. **Configuration Fatigue:** Manually managing GitHub Secrets in browser tabs and writing boilerplate CI/CD YAML files is repetitive and error-prone.
 
-`setup-hostinger-ci` generates the workflow and its versioned helpers after hosting prerequisites are configured.
+`deploy-ci` generates the workflow and its versioned helpers after hosting prerequisites are configured.
 
 ---
 
@@ -83,19 +87,27 @@ The default build is `<package-manager> run build`; `-BuildCommand` overrides it
 
 ```powershell
 # Inspect the proposed Laravel workflow without changing anything
-setup-hostinger-ci -NonInteractive -DryRun -SkipSecrets `
+deploy-ci -NonInteractive -DryRun -SkipSecrets `
   -DeployUrl https://example.com -NodeVersion 24
 
 # Generate a static Vite deployment; configure SSH secrets manually
-setup-hostinger-ci -Profile static-vite -NonInteractive -SkipSecrets `
+deploy-ci -Profile static-vite -NonInteractive -SkipSecrets `
   -DeployUrl https://example.com
 
 # Generate a SvelteKit adapter-static deployment
-setup-hostinger-ci -Profile sveltekit-static -NonInteractive -SkipSecrets `
+deploy-ci -Profile sveltekit-static -NonInteractive -SkipSecrets `
   -DeployUrl https://example.com
 ```
 
 Commit `.github/hostinger/` alongside `.github/workflows/deploy.yml`; it contains two Python helpers, one Bash script and the profile JSON. The generated workflow executes these reviewable, versioned files. Reinstall the CLI to get its new helper files. Review the displayed diff before replacing an existing workflow with `-Force`.
+
+If upgrading from `setup-hostinger-ci`, uninstall the previous CLI before running the new installer, then use `deploy-ci`. The installer now uses `~/.deploy-ci/bin`. To remove the previous installation, run its original uninstaller from the commit before the rename:
+
+```powershell
+irm https://raw.githubusercontent.com/Andndre/deploy-ci/e7aeb27a15a85239fcc41e8d29b8a0ab280cb5e7/uninstall.ps1 | iex
+```
+
+Existing workflows keep working. The `HOSTINGER_*` secrets, `.github/hostinger/` helper directory, `~/.hostinger-ci.json` configuration cache, remote `.<app-directory>.hostinger-ci` inventories and `hostinger-<environment>` concurrency groups retain their existing names for compatibility. Uninstallation preserves the configuration cache. Regenerate workflows only when you want the updated helpers, and review the diff before committing.
 
 Create the destination directory before deploying. Remote SSH requires Bash 4+, rsync, GNU coreutils and a writable parent directory for the sibling `.<app-directory>.hostinger-ci` inventory. Laravel also requires PHP. The target must be an absolute, canonical path with no symlink ancestors. Immutable asset paths cannot contain symlinks. HTML/application publication uses rsync delayed updates; it is not an atomic whole-application release or rollback system.
 
@@ -112,7 +124,7 @@ Configure these repository or environment secrets: `HOSTINGER_SSH_HOST`, `HOSTIN
 Old-browser asset requests are supported within the retention policy, not indefinitely. Keeping previous chunks addresses [Vite dynamic-import failures after deployments](https://vite.dev/guide/build#load-error-handling). A `403` or `429` is recorded and fails verification; it could reflect application rules, rate limiting or an intermediary challenge. The response does not establish the cause, and an HTTP check samples public responses rather than proving complete application health. Cleanup protects the current publication and the last verified assets when verification fails; failures during transfer/optimization can still leave inventories and uploads awaiting a later deployment. Budget exhaustion stops new uploads rather than automatically sacrificing retained assets.
 
 > [!TIP]
-> **Cloudflare & Hostinger CDN (Double-Proxy Warning):** If your domain already uses your own Cloudflare account (nameservers set to Cloudflare with proxied records), **disable Hostinger CDN in hPanel**. Running Hostinger CDN behind Cloudflare creates a redundant double-CDN layer (`Cloudflare ➔ Hostinger CDN ➔ LiteSpeed Origin`) that frequently triggers false-positive `429 Too Many Requests` rate limiting. In Cloudflare DNS, point the `A` record directly to the origin web server IP, not the Hostinger CDN anycast IP.
+> **CDN and rate-limit diagnostics:** A `403` or `429` alone does not establish that Cloudflare, Hostinger CDN or their combination caused the failure. Review the saved response headers and body, and check your account's security rules and provider guidance before changing CDN or DNS settings. The verifier stops on these responses; it does not retry them or solve challenges. Any configuration change must respect provider access controls and resource limits.
 
 ## Tests
 
@@ -192,14 +204,14 @@ Navigate to your Laravel project root:
 
 ```powershell
 cd D:\my-laravel-app
-setup-hostinger-ci
+deploy-ci
 ```
 
 Example interactive session:
 
 ```text
 ========================================================
-  Hostinger CI/CD Wizard (laravel-vite)
+  Deploy CI Wizard (laravel-vite)
 ========================================================
 
 [1/6] Inspecting Project Configuration...
@@ -243,10 +255,10 @@ To activate automated deployment, run:
 
 ## 🗑️ Uninstallation
 
-To cleanly remove `setup-hostinger-ci` from your system:
+To cleanly remove `deploy-ci` from your system:
 
 ```powershell
-irm https://raw.githubusercontent.com/Andndre/setup-hostinger-ci/main/uninstall.ps1 | iex
+irm https://raw.githubusercontent.com/Andndre/deploy-ci/main/uninstall.ps1 | iex
 ```
 
 ---

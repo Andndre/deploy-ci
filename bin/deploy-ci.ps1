@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Interactive CLI wizard for asset-safe CI/CD deployment to Hostinger:
-    - Simply run 'setup-hostinger-ci' with no arguments for the guided interactive wizard.
+    - Simply run 'deploy-ci' with no arguments for the guided interactive wizard.
     - Automatically detects PHP version, Node, Git branch, and tools (Pest, PHPUnit, Pint, ESLint, Wayfinder).
     - Offers Lean Deploy vs Gated Quality Pipeline (CI Test/Lint -> CD Deploy).
     - Remembers last used Hostinger SSH credentials (~/.hostinger-ci.json) for instant re-use across multiple domains.
@@ -98,7 +98,7 @@ param (
 $ErrorActionPreference = "Stop"
 
 Write-Host "`n========================================================" -ForegroundColor Cyan
-Write-Host "  Hostinger CI/CD Wizard ($Profile)" -ForegroundColor Cyan
+Write-Host "  Deploy CI Wizard ($Profile)" -ForegroundColor Cyan
 Write-Host "========================================================`n" -ForegroundColor Cyan
 
 # ----------------------------------------------------

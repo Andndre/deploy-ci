@@ -254,7 +254,7 @@ $verifyBuild$qualitySteps
 }
 
 $workflowTemplate = @'
-name: Hostinger CI/CD
+name: Deploy CI
 
 on:
   push:
@@ -384,7 +384,7 @@ foreach ($path in $files.Keys) {
     $fullPath = Join-Path (Get-Location).Path $path
     $parent = Split-Path -Parent $fullPath
     New-Item -ItemType Directory -Path $parent -Force | Out-Null
-    $temporaryFile = Join-Path $parent ('.hostinger-ci-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    $temporaryFile = Join-Path $parent ('.deploy-ci-' + [Guid]::NewGuid().ToString('N') + '.tmp')
     try {
         [IO.File]::WriteAllText($temporaryFile, $files[$path].Replace("`r`n", "`n") + "`n", $utf8)
         Move-Item -LiteralPath $temporaryFile -Destination $fullPath -Force

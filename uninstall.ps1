@@ -1,14 +1,14 @@
 <#
 .SYNOPSIS
-    Clean uninstaller for setup-hostinger-ci.
+    Clean uninstaller for deploy-ci.
 #>
 
 $ErrorActionPreference = "Stop"
-$installDir = Join-Path $HOME ".setup-hostinger-ci"
+$installDir = Join-Path $HOME ".deploy-ci"
 $binDir = Join-Path $installDir "bin"
 
 Write-Host "`n========================================================" -ForegroundColor Yellow
-Write-Host "  Uninstalling setup-hostinger-ci" -ForegroundColor Yellow
+Write-Host "  Uninstalling deploy-ci" -ForegroundColor Yellow
 Write-Host "========================================================`n" -ForegroundColor Yellow
 
 # 1. Remove from User PATH
@@ -26,4 +26,4 @@ if (Test-Path $installDir) {
     Write-Host "[2/2] Installation directory not found." -ForegroundColor DarkGray
 }
 
-Write-Host "`nsetup-hostinger-ci successfully removed from your system.`n" -ForegroundColor Green
+Write-Host "`ndeploy-ci successfully removed from your system.`n" -ForegroundColor Green

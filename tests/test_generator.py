@@ -50,7 +50,7 @@ class GeneratorTests(unittest.TestCase):
 
     def generate(self, *args, secrets=False, wrapper=None):
         command = [POWERSHELL, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-                   str(wrapper or ROOT / 'bin/setup-hostinger-ci.ps1'), '-NonInteractive',
+                   str(wrapper or ROOT / 'bin/deploy-ci.ps1'), '-NonInteractive',
                    '-ConfigCachePath', str(self.cache), '-TargetDir', '/home/test/app',
                    '-DeployUrl', 'https://example.test/']
         if not secrets:
@@ -158,7 +158,7 @@ class GeneratorTests(unittest.TestCase):
   @{ args = @($args); stdin = $value } | ConvertTo-Json -Compress | Add-Content -LiteralPath '""" + str(log).replace("'", "''") + """'
   if ($args -contains 'HOSTINGER_SSH_KEY') { $global:LASTEXITCODE = 9 } else { $global:LASTEXITCODE = 0 }
 }
-& '""" + str(ROOT / 'bin/setup-hostinger-ci.ps1').replace("'", "''") + "' @args\n")
+& '""" + str(ROOT / 'bin/deploy-ci.ps1').replace("'", "''") + "' @args\n")
         result = self.generate('-WithoutTests', '-SshHost', 'example.test', '-SshUser', 'test',
                                '-SshKeyPath', str(key), '-SshKnownHostsPath', str(known),
                                secrets=True, wrapper=wrapper)
@@ -187,7 +187,7 @@ class GeneratorTests(unittest.TestCase):
   @{ args = @($args); stdin = $value } | ConvertTo-Json -Compress | Add-Content -LiteralPath '""" + str(log).replace("'", "''") + """'
   $global:LASTEXITCODE = 0
 }
-& '""" + str(ROOT / 'bin/setup-hostinger-ci.ps1').replace("'", "''") + "' @args\n")
+& '""" + str(ROOT / 'bin/deploy-ci.ps1').replace("'", "''") + "' @args\n")
         result = self.generate('-WithoutTests', '-SshHost', 'example.test', '-SshUser', 'test',
                                '-SshKeyPath', str(key), '-SshKnownHostsPath', str(known),
                                '-MaintenanceMode', secrets=True, wrapper=wrapper)

@@ -58,7 +58,7 @@ wheels = [
 ]
 
 [[package]]
-name = "setup-hostinger-ci"
+name = "deploy-ci"
 version = "0.2.0"
 source = { virtual = "." }
 dependencies = [

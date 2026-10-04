@@ -1,7 +1,7 @@
 [project]
-name = "setup-hostinger-ci"
+name = "deploy-ci"
 version = "0.2.0"
-description = "Interactive CLI wizard for Hostinger CI/CD with asset-safe deployments"
+description = "Independent CI/CD workflow generator for deployments to Hostinger hosting"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
