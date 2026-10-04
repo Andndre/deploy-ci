@@ -137,7 +137,7 @@ case "$phase" in
     # keeps old chunks and eventually cleans them up too. Unknown files stay.
     if [[ ! -f "$state/baseline-done" ]]; then
       baseline="$state/history/00000000000000-baseline.txt"
-      [[ ! -e "$baseline" ]]
+      rm -f -- "$baseline"
       : > "$baseline"
       for dir in "${asset_dirs[@]}"; do
         [[ -d "$dir" ]] || continue
