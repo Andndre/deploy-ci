@@ -25,6 +25,36 @@ def load(name, filename):
 deploy = load('deploy', 'deploy.py')
 
 
+def make_local_ssh(path):
+    script = (
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "args = sys.argv[1:]\n"
+        "while args:\n"
+        "    if args[0] in ('-l', '-p', '-i'):\n"
+        "        args = args[2:]\n"
+        "    elif args[0].startswith('-o'):\n"
+        "        args = args[1:] if len(args[0]) > 2 else args[2:]\n"
+        "    elif args[0] == '--':\n"
+        "        args = args[2:]\n"
+        "        break\n"
+        "    elif args[0].startswith('-'):\n"
+        "        args = args[1:]\n"
+        "    else:\n"
+        "        args = args[1:]\n"
+        "        break\n"
+        "if not args:\n"
+        "    sys.exit(0)\n"
+        "if len(args) == 1:\n"
+        "    os.execvp('bash', ['bash', '-c', args[0]])\n"
+        "else:\n"
+        "    os.execvp(args[0], args)\n"
+    )
+    path.write_text(script)
+    path.chmod(0o700)
+    return path
+
+
 class DeploymentTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=SCRATCH)
@@ -80,6 +110,30 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn('--exclude=/uploads', command)
         self.assertIn('--protect-args', command)
         self.assertIn('StrictHostKeyChecking=yes', command[command.index('-e') + 1])
+
+    def test_mock_ssh_argument_parsing(self):
+        def parse_ssh(argv):
+            args = argv[1:]
+            while args:
+                if args[0] in ('-l', '-p', '-i'):
+                    args = args[2:]
+                elif args[0].startswith('-o'):
+                    args = args[1:] if len(args[0]) > 2 else args[2:]
+                elif args[0] == '--':
+                    args = args[2:]
+                    break
+                elif args[0].startswith('-'):
+                    args = args[1:]
+                else:
+                    args = args[1:]
+                    break
+            return args
+
+        self.assertEqual(parse_ssh(['ssh', 'host', 'bash -s -- cmd']), ['bash -s -- cmd'])
+        self.assertEqual(parse_ssh(['ssh', '-l', 'test', 'example.test', 'rsync', '--server', '-s', '.']),
+                         ['rsync', '--server', '-s', '.'])
+        self.assertEqual(parse_ssh(['ssh', '-p', '22', '-oBatchMode=yes', 'host', 'rsync']), ['rsync'])
+
 
 
 BASH = os.environ.get('TEST_BASH') or (r'C:\Program Files\Git\bin\bash.exe' if os.name == 'nt' else shutil.which('bash'))
@@ -256,9 +310,7 @@ class RsyncIntegrationTests(unittest.TestCase):
             (target / 'uploads/user.txt').write_text('keep upload')
             (target / '.env').write_text('keep production secret')
             (target / 'obsolete.html').write_text('remove stale application file')
-            ssh = root / 'local-ssh'
-            ssh.write_text("#!/usr/bin/env python3\nimport os, shlex, sys\ncommands = sys.argv[2:]\ncommand = commands[0] if len(commands) == 1 else shlex.join(commands)\nos.execvp('bash', ['bash', '-c', command])\n")
-            ssh.chmod(0o700)
+            ssh = make_local_ssh(root / 'local-ssh')
             config = dict(profile='static-vite', output_dir=str(output), immutable_dirs=['assets'],
                           protected_paths=['uploads', '.env*'], keep_releases=2, retention_days=7, migrate=False)
             env = dict(HOSTINGER_TARGET_DIR=str(target), HOSTINGER_SSH_HOST='example.test',
