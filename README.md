@@ -5,7 +5,9 @@
 [![PowerShell: 7+ / 5.1](https://img.shields.io/badge/PowerShell-5.1%20%7C%207%2B-5391FE.svg?logo=powershell)](https://github.com/Andndre/setup-hostinger-ci)
 [![Laravel: 11 / 12 / 13](https://img.shields.io/badge/Laravel-11%20%7C%2012%20%7C%2013-FF2D20.svg?logo=laravel)](https://laravel.com)
 
-> **Zero-config interactive CLI wizard** to automate Laravel + Vite CI/CD deployment to **Hostinger Web Hosting (Premium, Business, Cloud)** using GitHub Actions & Rsync over SSH.
+> Interactive CLI wizard for Laravel + Vite and static sites on Hostinger, using GitHub Actions and asset-safe Rsync over SSH.
+
+This is a deployment workflow generator for developers familiar with Git and SSH. Installation can be one command; preparing a production hosting account is a separate task. This tool does not provision the server, guarantee zero downtime, or automatically roll back application files or database migrations.
 
 ---
 
@@ -30,31 +32,93 @@ setup-hostinger-ci
 Deploying modern Laravel applications (Vite, Inertia, Pest, SQLite/MySQL) to shared environments like Hostinger (Premium, Business, or Cloud) presents unique architectural challenges:
 
 1. **Memory & Resource Caps:** Running `npm run build` or `composer install` directly on shared servers frequently gets killed due to RAM/CPU throttling.
-2. **Inode Quota Exhaustion:** Deploying `node_modules` to production burns ~40,000–80,000 inodes of your hosting allocation for no benefit.
-3. **Catastrophic Data Loss:** Uncalibrated `rsync --delete` runs will permanently wipe **production SQLite databases** (`database/*.sqlite*`) and user media uploads (`storage/**`).
+2. **File Quotas:** Dependency trees and retained build assets can consume a hosting account's file and storage allocation.
+3. **Production Data Loss:** Rsync deletion can remove SQLite databases and uploads when persistent paths are not explicitly protected.
 4. **Git Repository Bloat:** Committing `public/build` causes repository bloat and endless merge conflicts whenever assets are compiled.
 5. **Configuration Fatigue:** Manually managing GitHub Secrets in browser tabs and writing boilerplate CI/CD YAML files is repetitive and error-prone.
 
-**`setup-hostinger-ci` automates the entire workflow in seconds.**
+`setup-hostinger-ci` generates the workflow and its versioned helpers after hosting prerequisites are configured.
 
 ---
 
 ## ✨ Key Features
 
-* 🧙‍♂️ **Guided Interactive Wizard:** Run the command with zero flags. The wizard inspects your project and asks simple confirmation questions with intelligent defaults (just press `Enter`).
+* 🧙‍♂️ **Guided Interactive Wizard:** Inspects the project and collects deployment settings. SSH access, production credentials and a public verification URL still need to be supplied.
 * 🔍 **Smart Auto-Inspection:** Automatically detects PHP version (`composer.json`), Node (`.nvmrc`), Git branch, test runners (Pest / PHPUnit), linters (Laravel Pint, ESLint), and route generators (Wayfinder / Ziggy).
 * 🛡️ **Gated vs. Lean Pipeline Options:**
   * **Gated Pipeline:** Enforces Pint code style, ESLint, and Pest/PHPUnit test suites before deployment. Deployment only proceeds when all checks pass.
   * **Lean Deploy:** Rapid build-and-deploy pipeline for projects without active test suites.
-* 💾 **Bulletproof Production Data Safety:** Rsync strictly protects stateful and sensitive files:
+* 💾 **Production Data Protection:** Application transfer excludes persistent files and directories:
   ```text
-  --exclude=.env --exclude=node_modules --exclude=.git --exclude=.github
-  --exclude=storage/** --exclude=database/*.sqlite* --exclude=tests
+  --exclude=/.env* --exclude=/node_modules --exclude=/.git --exclude=/.github
+  --exclude=/storage --exclude=/database/*.sqlite* --exclude=/tests
+  --exclude=/public/storage --exclude=/public/build/assets
   ```
 * 🧠 **Hostinger Credential Caching:** Caches Hostinger SSH Host, User, and Port locally in `~/.hostinger-ci.json` for instant re-use across multiple domains.
 * 📂 **Auto-Inferred Target Directory:** Suggests `/home/<user>/domains/<folder-name>/app` automatically based on your project directory.
-* 🔐 **Automated GitHub Secrets:** Provisions all SSH secrets to your GitHub repository instantly using GitHub CLI (`gh`).
+* 🔐 **GitHub Secret Setup:** Uploads SSH secrets with GitHub CLI (`gh`). `-SkipSecrets` supports configuring them manually.
 * 🧹 **Git Clean-up:** Automatically appends `/public/build` to `.gitignore` and removes it from the Git tracking index cache (`git rm -r --cached`).
+* **Asset publication:** Uploads immutable assets before application files and manifests. Existing immutable URLs with different bytes cause deployment to fail. After transfer and optimization complete, cleanup runs even if the HTTP check fails; canceled jobs and failed transfers skip cleanup.
+* **Retention:** Keeps assets referenced by the last **3 completed publications**, every inventory within **7 days**, and the **last HTTP-verified publication**. Previous hashed assets are adopted on the first deployment; unrecognized files are left alone. Expired failed uploads are reclaimed by a later completed deployment.
+* **Retention budget:** Refuses upload if retained assets and deployment inventories would exceed **10,000 regular files** or **512 MiB**, with conservative metadata headroom. Customize with `-MaxRetainedFiles` and `-MaxRetainedMiB`. This is a local deployment budget, not a measurement of the hosting account's full inode/storage quota; application code, uploads, other sites and directory inodes are outside it. Check account usage in hPanel.
+* **HTTP verification:** Checks the HTML page and up to **6 JS/CSS dependencies**, including lazy chunks. Validates status, MIME and exact asset bytes. Each request saves UTC time, headers, `CF-Ray`, `Retry-After` and a bounded response body as a workflow artifact.
+* **Serialized deployments:** One deployment job per named environment, without canceling an active transfer. This applies within one GitHub repository; separate repositories targeting the same directory need shared coordination. [GitHub concurrency documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+* **Reviewable generation:** `-DryRun` leaves files, cache, Git index and secrets untouched. Existing generated files show a diff; noninteractive replacement requires `-Force`. `-NodeVersion` overrides detection in both pipeline modes.
+* **Stage results:** The workflow summary separates transfer/optimization, public HTTP verification and cleanup. An HTTP failure keeps the workflow red but does not imply that uploaded files were rolled back or never published.
+
+---
+
+## Project profiles and safe deployment
+
+| Profile | Build output | Immutable directories | Remote optimization |
+| --- | --- | --- | --- |
+| `laravel-vite` (default) | Application root | `public/build/assets` | Laravel Artisan |
+| `static-vite` | `dist` | `assets` | None |
+| `sveltekit-static` | `build` | `_app/immutable` | None |
+| `static` | Required `-OutputDir` | Required `-ImmutableDirs` | None |
+
+Laravel profiles cover Blade, Vue, React/Inertia and Svelte/Inertia through the same Vite output contract. SvelteKit must use [`adapter-static`](https://svelte.dev/docs/kit/adapter-static); both Vite and legacy Svelte config locations are inspected. Static outputs must contain HTML. SSR Node requires process supervision and restart support and is not implemented by these profiles.
+
+The default build is `<package-manager> run build`; `-BuildCommand` overrides it. npm, pnpm, Yarn and Bun use frozen lockfile installs. Pin non-npm managers with `packageManager` in `package.json`. `-OutputDir`, `-ImmutableDirs`, `-ProtectedPaths`, `-KeepReleases`, `-RetentionDays`, `-Environment` and `-PageContains` customize each generated profile. The public site is assumed to serve assets from its domain root.
+
+```powershell
+# Inspect the proposed Laravel workflow without changing anything
+setup-hostinger-ci -NonInteractive -DryRun -SkipSecrets `
+  -DeployUrl https://example.com -NodeVersion 24
+
+# Generate a static Vite deployment; configure SSH secrets manually
+setup-hostinger-ci -Profile static-vite -NonInteractive -SkipSecrets `
+  -DeployUrl https://example.com
+
+# Generate a SvelteKit adapter-static deployment
+setup-hostinger-ci -Profile sveltekit-static -NonInteractive -SkipSecrets `
+  -DeployUrl https://example.com
+```
+
+Commit `.github/hostinger/` alongside `.github/workflows/deploy.yml`; it contains two Python helpers, one Bash script and the profile JSON. The generated workflow executes these reviewable, versioned files. Reinstall the CLI to get its new helper files. Review the displayed diff before replacing an existing workflow with `-Force`.
+
+Create the destination directory before deploying. Remote SSH requires Bash 4+, rsync, GNU coreutils and a writable parent directory for the sibling `.<app-directory>.hostinger-ci` inventory. Laravel also requires PHP. The target must be an absolute, canonical path with no symlink ancestors. Immutable asset paths cannot contain symlinks. HTML/application publication uses rsync delayed updates; it is not an atomic whole-application release or rollback system.
+
+For the first production deployment, prepare the server directory, production `.env`, database and runtime permissions. Configure the domain to serve Laravel's `public/` directory using the method supported by your hosting account. Verify the SSH server's host key and test access. Keep a recoverable backup of production data and test restoration before relying on automated deployments. `-DryRun` previews generator changes; it does not connect to or validate the production server.
+
+Before uploading, the remote script checks required commands, target/parent access, the Laravel production `.env` and configured PHP CLI version, immutable collisions and the retention budget. It stops with a stage-specific message when a requirement is missing. This checks current capabilities, not future provider changes or every possible application/runtime setting.
+
+Automatic migrations are **off by default**. `-IncludeMigration` explicitly enables `php artisan migrate --force`. The tool does not validate migration safety, back up the database, undo partial schema changes, or prove compatibility with concurrent requests. Use production-reviewed migrations and an independent recovery plan; a failed migration needs operator investigation.
+
+In-place PHP/vendor updates can expose mixed application versions during publication. Retained assets and delayed rsync updates reduce asset failures but do not make the application atomic or reset server-managed OPcache. Applications requiring reliable rollback or uninterrupted releases need a separately validated release-directory/runtime design. Do not assume symlink switching or OPcache restart permissions exist on every shared hosting account.
+
+Configure these repository or environment secrets: `HOSTINGER_SSH_HOST`, `HOSTINGER_SSH_USER`, `HOSTINGER_SSH_PORT`, `HOSTINGER_TARGET_DIR`, `HOSTINGER_SSH_KEY` and **`HOSTINGER_SSH_KNOWN_HOSTS`**. The last must contain independently verified OpenSSH host keys (including `[host]:port` for a nonstandard port). With automatic secret setup, pass `-SshKnownHostsPath` and `-SshKeyPath`; values are sent through stdin and each `gh` exit code is checked. [GitHub CLI secret input documentation](https://cli.github.com/manual/gh_secret_set).
+
+Old-browser asset requests are supported within the retention policy, not indefinitely. Keeping previous chunks addresses [Vite dynamic-import failures after deployments](https://vite.dev/guide/build#load-error-handling). A `403` or `429` is recorded and fails verification; it could reflect application rules, rate limiting or an intermediary challenge. The response does not establish the cause, and an HTTP check samples public responses rather than proving complete application health. Cleanup protects the current publication and the last verified assets when verification fails; failures during transfer/optimization can still leave inventories and uploads awaiting a later deployment. Budget exhaustion stops new uploads rather than automatically sacrificing retained assets.
+
+## Tests
+
+```powershell
+python -m pip install -r tests/requirements.txt
+python -m unittest discover -s tests -v
+```
+
+Tests cover generator immutability and replacement, both workflow modes, package managers, failed secret commands, remote collision/path/retention behavior, and HTTP failures. Linux CI additionally runs an actual rsync transfer across two releases. Set `POWERSHELL_EXE` to run the generator tests with Windows PowerShell 5.1; Windows remote-script tests use Git Bash.
 
 ---
 
@@ -133,7 +197,7 @@ Example interactive session:
 
 ```text
 ========================================================
-  Hostinger Laravel CI/CD Wizard (GitHub Actions v2)
+  Hostinger CI/CD Wizard (laravel-vite)
 ========================================================
 
 [1/6] Inspecting Project Configuration...
@@ -152,6 +216,8 @@ Hostinger SSH User [u519809216]:
 Hostinger SSH Port [65002]: 
 Path to local SSH Private Key [C:\Users\Andndre\.ssh\id_ed25519]: 
 Path to TARGET_DIR on Hostinger [/home/u519809216/domains/my-laravel-app/app]: 
+Public URL to verify after deployment: https://example.com
+Path to verified SSH known_hosts entries for Hostinger [C:\Users\Andndre\.ssh\known_hosts]:
 
 [3/6] Inspecting .gitignore & Git Index...
   -> '/public/build' already present in .gitignore
@@ -162,11 +228,11 @@ Path to TARGET_DIR on Hostinger [/home/u519809216/domains/my-laravel-app/app]:
 
 [5/6] Configuring GitHub Secrets...
   -> Uploading secrets to GitHub repository...
-  -> All Secrets successfully configured on GitHub!
+All six SSH secrets configured successfully.
 
 [6/6] Done!
 To activate automated deployment, run:
-  git add .gitignore .github/workflows/deploy.yml
+  git add .gitignore .github/workflows/deploy.yml .github/hostinger/
   git commit -m "ci: setup automated hostinger deployment"
   git push origin main
 ```

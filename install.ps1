@@ -31,7 +31,11 @@ if (-not (Test-Path $installDir)) {
 Write-Host "[2/4] Downloading CLI scripts from GitHub..." -ForegroundColor Gray
 $files = @(
     "setup-hostinger-ci.cmd",
-    "setup-hostinger-ci.ps1"
+    "setup-hostinger-ci.ps1",
+    "generate-workflow.ps1",
+    "deploy.py",
+    "remote-deploy.sh",
+    "check-deploy.py"
 )
 
 foreach ($file in $files) {

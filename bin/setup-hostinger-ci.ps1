@@ -1,15 +1,17 @@
 <#
 .SYNOPSIS
-    Interactive & Adaptive CI/CD Generator for Laravel on Hostinger (GitHub Actions).
+    Interactive CI/CD Generator for Laravel/Vite and static projects on Hostinger.
 
 .DESCRIPTION
-    Zero-config interactive CLI wizard to automate Laravel + Vite CI/CD deployment to Hostinger:
+    Interactive CLI wizard for asset-safe CI/CD deployment to Hostinger:
     - Simply run 'setup-hostinger-ci' with no arguments for the guided interactive wizard.
     - Automatically detects PHP version, Node, Git branch, and tools (Pest, PHPUnit, Pint, ESLint, Wayfinder).
     - Offers Lean Deploy vs Gated Quality Pipeline (CI Test/Lint -> CD Deploy).
     - Remembers last used Hostinger SSH credentials (~/.hostinger-ci.json) for instant re-use across multiple domains.
-    - Protects production SQLite databases (*.sqlite*) and user uploads (storage/**) from Rsync deletion.
-    - Automatically untracks public/build from Git and provisions GitHub Secrets via 'gh' CLI.
+    - Uploads immutable assets before application publication, then verifies HTTP responses.
+    - Retains previous assets and protects production SQLite databases and uploads.
+    - Supports static Vite, SvelteKit adapter-static, and custom static output profiles.
+    - Previews replacements, keeps dry runs read-only, and checks GitHub secret command failures.
 #>
 
 [CmdletBinding()]
@@ -33,6 +35,44 @@ param (
 
     [string]$NodeVersion = "",
 
+    [ValidateSet('laravel-vite', 'static-vite', 'sveltekit-static', 'static')]
+    [string]$Profile = 'laravel-vite',
+
+    [string]$OutputDir = '',
+
+    [string[]]$ImmutableDirs = @(),
+
+    [string[]]$ProtectedPaths = @(),
+
+    [ValidateSet('', 'npm', 'pnpm', 'yarn', 'bun')]
+    [string]$PackageManager = '',
+
+    [string]$BuildCommand = '',
+
+    [string]$DeployUrl = '',
+
+    [string]$PageContains = '',
+
+    [ValidateRange(2, 100)]
+    [int]$KeepReleases = 3,
+
+    [ValidateRange(1, 3650)]
+    [int]$RetentionDays = 7,
+
+    [ValidateRange(10, 1000000)]
+    [int]$MaxRetainedFiles = 10000,
+
+    [ValidateRange(1, 1048576)]
+    [int]$MaxRetainedMiB = 512,
+
+    [string]$Environment = 'production',
+
+    [string]$SshKnownHostsPath = '',
+
+    [string]$ConfigCachePath = '',
+
+    [switch]$Force,
+
     [switch]$WithTests,
 
     [switch]$WithoutTests,
@@ -49,16 +89,21 @@ param (
 $ErrorActionPreference = "Stop"
 
 Write-Host "`n========================================================" -ForegroundColor Cyan
-Write-Host "  Hostinger Laravel CI/CD Wizard (GitHub Actions v2)" -ForegroundColor Cyan
+Write-Host "  Hostinger CI/CD Wizard ($Profile)" -ForegroundColor Cyan
 Write-Host "========================================================`n" -ForegroundColor Cyan
 
 # ----------------------------------------------------
 # 1. Validate Prerequisites
 # ----------------------------------------------------
-if (-not (Test-Path "artisan")) {
+if ($Profile -eq 'laravel-vite' -and -not (Test-Path "artisan")) {
     Write-Error "ERROR: This command MUST be run from the root directory of a Laravel project ('artisan' file not found)."
     exit 1
 }
+if (-not (Test-Path 'package.json')) {
+    throw 'A package.json with a frontend build script is required.'
+}
+if ($WithTests -and $WithoutTests) { throw 'Choose either WithTests or WithoutTests.' }
+if ($Profile -ne 'laravel-vite' -and $IncludeMigration) { throw 'Migrations require the laravel-vite profile.' }
 
 $isGit = git rev-parse --is-inside-work-tree 2>$null
 if ($LASTEXITCODE -ne 0 -or $isGit -ne "true") {
@@ -69,7 +114,7 @@ if ($LASTEXITCODE -ne 0 -or $isGit -ne "true") {
 # ----------------------------------------------------
 # 2. Hostinger Config Cache Helper (~/.hostinger-ci.json)
 # ----------------------------------------------------
-$configCacheFile = Join-Path $HOME ".hostinger-ci.json"
+$configCacheFile = if ($ConfigCachePath) { $ConfigCachePath } else { Join-Path $HOME '.hostinger-ci.json' }
 $cachedConfig = @{}
 if (Test-Path $configCacheFile) {
     try {
@@ -102,7 +147,7 @@ if (Test-Path "composer.json") {
         $composerJson = Get-Content "composer.json" -Raw | ConvertFrom-Json
         if ($composerJson.require -and $composerJson.require.php) {
             $reqPhp = [string]$composerJson.require.php
-            if ($reqPhp -match "8\.[1-4]") {
+            if ($reqPhp -match '[0-9]+\.[0-9]+') {
                 $detectedPhp = $Matches[0]
             }
         }
@@ -240,7 +285,7 @@ if (-not $NonInteractive) {
     }
 
     # PHP Version
-    if ([string]::IsNullOrWhiteSpace($PhpVersion)) {
+    if ($Profile -eq 'laravel-vite' -and [string]::IsNullOrWhiteSpace($PhpVersion)) {
         $PhpVersion = Read-InputWithDefault -Message "PHP version on Hostinger" -DefaultValue $detectedPhp
     }
 
@@ -256,7 +301,7 @@ if (-not $NonInteractive) {
     }
 
     # Migration
-    if (-not $PSBoundParameters.ContainsKey('IncludeMigration')) {
+    if ($Profile -eq 'laravel-vite' -and -not $PSBoundParameters.ContainsKey('IncludeMigration')) {
         $IncludeMigration = Confirm-Choice -Message "Automatically run 'php artisan migrate --force' after deployment?" -DefaultYes $false
     }
 
@@ -280,7 +325,7 @@ if (-not $NonInteractive) {
     }
 
     # SSH Private Key Path
-    if ([string]::IsNullOrWhiteSpace($SshKeyPath)) {
+    if (-not $SkipSecrets -and [string]::IsNullOrWhiteSpace($SshKeyPath)) {
         $defaultKey = Join-Path $HOME ".ssh\id_ed25519"
         if (-not (Test-Path $defaultKey)) {
             $rsaKey = Join-Path $HOME ".ssh\id_rsa"
@@ -293,7 +338,7 @@ if (-not $NonInteractive) {
     if ([string]::IsNullOrWhiteSpace($TargetDir)) {
         $currentDirName = (Get-Item .).Name
         $defaultTarget = if (-not [string]::IsNullOrWhiteSpace($SshUser)) {
-            "/home/$SshUser/domains/$currentDirName/app"
+            if ($Profile -eq 'laravel-vite') { "/home/$SshUser/domains/$currentDirName/app" } else { "/home/$SshUser/domains/$currentDirName/public_html" }
         } elseif ($cachedConfig.TargetDir) {
             $cachedConfig.TargetDir
         } else {
@@ -307,314 +352,7 @@ if (-not $NonInteractive) {
     if ([string]::IsNullOrWhiteSpace($PhpVersion)) { $PhpVersion = $detectedPhp }
     if ($SshPort -le 0) { $SshPort = 65002 }
     if ([string]::IsNullOrWhiteSpace($SshKeyPath)) { $SshKeyPath = Join-Path $HOME ".ssh\id_ed25519" }
-    $useGated = ($WithTests.IsPresent -or ($hasPest -and -not $WithoutTests.IsPresent))
+    $useGated = ($WithTests.IsPresent -or (($hasPest -or $hasPhpUnit -or $hasPint -or $hasEslint) -and -not $WithoutTests.IsPresent))
 }
 
-# Cache host/user/port locally for frictionless setup of subsequent projects
-try {
-    $saveCache = @{
-        SshHost   = $SshHost
-        SshUser   = $SshUser
-        SshPort   = $SshPort
-        TargetDir = $TargetDir
-    }
-    $saveCache | ConvertTo-Json | Set-Content -Path $configCacheFile -Encoding UTF8
-} catch {}
-
-# ----------------------------------------------------
-# 5. Clean up Git tracking for public/build
-# ----------------------------------------------------
-Write-Host "`n[3/6] Inspecting .gitignore & Git Index..." -ForegroundColor Gray
-$gitignoreFile = ".gitignore"
-if (Test-Path $gitignoreFile) {
-    $gitignoreContent = Get-Content $gitignoreFile -Raw
-    if ($gitignoreContent -notmatch "(^|\r?\n)/?public/build/?($|\r?\n)") {
-        if (-not $DryRun) {
-            Add-Content -Path $gitignoreFile -Value "`n/public/build"
-        }
-        Write-Host "  -> '/public/build' added to .gitignore" -ForegroundColor Green
-    } else {
-        Write-Host "  -> '/public/build' already present in .gitignore" -ForegroundColor DarkGray
-    }
-} else {
-    if (-not $DryRun) {
-        Set-Content -Path $gitignoreFile -Value "/public/build"
-    }
-    Write-Host "  -> Created .gitignore with '/public/build'" -ForegroundColor Green
-}
-
-git ls-files --error-unmatch public/build 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "  -> Removing public/build from Git tracking cache..." -ForegroundColor Yellow
-    if (-not $DryRun) {
-        git rm -r --cached public/build 2>$null | Out-Null
-    }
-    Write-Host "  -> public/build successfully untracked from Git (physical files preserved)." -ForegroundColor Green
-}
-
-# ----------------------------------------------------
-# 6. Generate GitHub Actions Workflow
-# ----------------------------------------------------
-Write-Host "`n[4/6] Generating GitHub Actions Workflow..." -ForegroundColor Gray
-
-$migrationCommand = ""
-if ($IncludeMigration) {
-    $migrationCommand = "`n            php artisan migrate --force"
-}
-
-$workflowContent = ""
-
-if ($useGated) {
-    Write-Host "  -> Mode: GATED PIPELINE (Verify Quality/Tests -> Deploy to Hostinger)" -ForegroundColor Cyan
-    
-    $testCommand = if ($hasPest) { "./vendor/bin/pest" } else { "php artisan test" }
-    
-    $verifySteps = @"
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '$PhpVersion'
-          extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, pdo_sqlite, bcmath, curl, zip
-          coverage: none
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: $detectedNode
-          cache: 'npm'
-
-      - name: Install Dependencies
-        run: |
-          composer install --no-interaction --prefer-dist --optimize-autoloader
-          npm ci
-
-      - name: Prepare Environment & Frontend Types
-        run: |
-          cp .env.example .env 2>/dev/null || true
-          php artisan key:generate || true
-          npm run build
-"@
-
-    if ($hasPint) {
-        $verifySteps += @"
-
-      - name: Check PHP Code Style (Pint)
-        run: vendor/bin/pint --test
-"@
-    }
-
-    if ($hasEslint -and -not [string]::IsNullOrWhiteSpace($lintCmd)) {
-        $verifySteps += @"
-
-      - name: Check Frontend Lint (ESLint)
-        run: $lintCmd
-"@
-    }
-
-    $verifySteps += @"
-
-      - name: Run Automated Tests
-        run: $testCommand
-"@
-
-    $workflowContent = @"
-name: CI/CD Pipeline
-
-on:
-  push:
-    branches: [ $Branch ]
-  pull_request:
-    branches: [ $Branch ]
-  workflow_dispatch:
-
-jobs:
-  verify:
-    name: Code Quality & Tests
-    runs-on: ubuntu-latest
-
-    steps:
-$verifySteps
-
-  deploy:
-    name: Deploy to Hostinger
-    runs-on: ubuntu-latest
-    needs: [verify]
-    if: github.ref == 'refs/heads/$Branch' && github.event_name == 'push'
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '$PhpVersion'
-          extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, pdo_sqlite, bcmath, curl, zip
-          coverage: none
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: $detectedNode
-          cache: 'npm'
-
-      - name: Install Composer Dependencies
-        run: |
-          composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
-
-      - name: Build Frontend Assets
-        run: |
-          npm ci
-          npm run build
-
-      - name: Deploy via Rsync over SSH
-        uses: easingthemes/ssh-deploy@main
-        env:
-          SSH_PRIVATE_KEY: `${{ secrets.HOSTINGER_SSH_KEY }}
-          ARGS: "-rlgoDzvcO --delete --exclude=.env --exclude=node_modules --exclude=.git --exclude=.github --exclude=storage/** --exclude=database/*.sqlite* --exclude=tests"
-          REMOTE_HOST: `${{ secrets.HOSTINGER_SSH_HOST }}
-          REMOTE_PORT: `${{ secrets.HOSTINGER_SSH_PORT }}
-          REMOTE_USER: `${{ secrets.HOSTINGER_SSH_USER }}
-          TARGET: `${{ secrets.HOSTINGER_TARGET_DIR }}
-
-      - name: Post-Deploy Optimization
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: `${{ secrets.HOSTINGER_SSH_HOST }}
-          port: `${{ secrets.HOSTINGER_SSH_PORT }}
-          username: `${{ secrets.HOSTINGER_SSH_USER }}
-          key: `${{ secrets.HOSTINGER_SSH_KEY }}
-          script: |
-            cd `${{ secrets.HOSTINGER_TARGET_DIR }}
-            php artisan optimize:clear
-            php artisan config:cache
-            php artisan route:cache
-            php artisan view:cache$migrationCommand
-"@
-} else {
-    Write-Host "  -> Mode: LEAN DEPLOY (Build & Deploy to Hostinger)" -ForegroundColor Cyan
-    
-    $workflowContent = @"
-name: Deploy to Hostinger
-
-on:
-  push:
-    branches: [ $Branch ]
-  workflow_dispatch:
-
-jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '$PhpVersion'
-          extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, pdo_sqlite, bcmath, curl, zip
-          coverage: none
-
-      - name: Install Composer Dependencies
-        run: |
-          composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: $detectedNode
-          cache: 'npm'
-
-      - name: Build Frontend Assets
-        run: |
-          npm ci
-          npm run build
-
-      - name: Deploy via Rsync over SSH
-        uses: easingthemes/ssh-deploy@main
-        env:
-          SSH_PRIVATE_KEY: `${{ secrets.HOSTINGER_SSH_KEY }}
-          ARGS: "-rlgoDzvcO --delete --exclude=.env --exclude=node_modules --exclude=.git --exclude=.github --exclude=storage/** --exclude=database/*.sqlite* --exclude=tests"
-          REMOTE_HOST: `${{ secrets.HOSTINGER_SSH_HOST }}
-          REMOTE_PORT: `${{ secrets.HOSTINGER_SSH_PORT }}
-          REMOTE_USER: `${{ secrets.HOSTINGER_SSH_USER }}
-          TARGET: `${{ secrets.HOSTINGER_TARGET_DIR }}
-
-      - name: Post-Deploy Optimization
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: `${{ secrets.HOSTINGER_SSH_HOST }}
-          port: `${{ secrets.HOSTINGER_SSH_PORT }}
-          username: `${{ secrets.HOSTINGER_SSH_USER }}
-          key: `${{ secrets.HOSTINGER_SSH_KEY }}
-          script: |
-            cd `${{ secrets.HOSTINGER_TARGET_DIR }}
-            php artisan optimize:clear
-            php artisan config:cache
-            php artisan route:cache
-            php artisan view:cache$migrationCommand
-"@
-}
-
-$workflowDir = ".github/workflows"
-$workflowFile = "$workflowDir/deploy.yml"
-
-if (-not $DryRun) {
-    if (-not (Test-Path $workflowDir)) {
-        New-Item -ItemType Directory -Path $workflowDir -Force | Out-Null
-    }
-    Set-Content -Path $workflowFile -Value $workflowContent -Encoding UTF8
-    Write-Host "  -> Workflow file saved at: $workflowFile" -ForegroundColor Green
-} else {
-    Write-Host "  -> [DryRun] Workflow will be saved at: $workflowFile" -ForegroundColor Cyan
-}
-
-# ----------------------------------------------------
-# 7. Configure GitHub Secrets via 'gh' CLI
-# ----------------------------------------------------
-Write-Host "`n[5/6] Configuring GitHub Secrets..." -ForegroundColor Gray
-if ($SkipSecrets) {
-    Write-Host "  -> [SkipSecrets] GitHub secrets configuration skipped." -ForegroundColor Yellow
-} else {
-    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-        Write-Warning "GitHub CLI (gh) not detected. Please configure GitHub Secrets manually in your repository settings."
-    } else {
-        if (-not (Test-Path $SshKeyPath)) {
-            Write-Error "ERROR: SSH Private Key not found at: $SshKeyPath"
-            exit 1
-        }
-        $privateKeyContent = Get-Content $SshKeyPath -Raw
-
-        if ($DryRun) {
-            Write-Host "  -> [DryRun] Secrets to be uploaded via gh CLI:" -ForegroundColor Cyan
-            Write-Host "     - HOSTINGER_SSH_HOST: $SshHost"
-            Write-Host "     - HOSTINGER_SSH_USER: $SshUser"
-            Write-Host "     - HOSTINGER_SSH_PORT: $SshPort"
-            Write-Host "     - HOSTINGER_TARGET_DIR: $TargetDir"
-            Write-Host "     - HOSTINGER_SSH_KEY: [Private Key from $SshKeyPath]"
-        } else {
-            Write-Host "  -> Uploading secrets to GitHub repository..." -ForegroundColor Cyan
-            gh secret set HOSTINGER_SSH_HOST --body "$SshHost"
-            gh secret set HOSTINGER_SSH_USER --body "$SshUser"
-            gh secret set HOSTINGER_SSH_PORT --body "$SshPort"
-            gh secret set HOSTINGER_TARGET_DIR --body "$TargetDir"
-            gh secret set HOSTINGER_SSH_KEY --body "$privateKeyContent"
-            Write-Host "  -> All Secrets successfully configured on GitHub!" -ForegroundColor Green
-        }
-    }
-}
-
-# ----------------------------------------------------
-# 8. Complete
-# ----------------------------------------------------
-Write-Host "`n[6/6] Done!" -ForegroundColor Green
-Write-Host "To activate automated deployment, run:" -ForegroundColor Cyan
-Write-Host "  git add .gitignore .github/workflows/deploy.yml" -ForegroundColor White
-Write-Host "  git commit -m `"ci: setup automated hostinger deployment`"" -ForegroundColor White
-Write-Host "  git push origin $Branch`n" -ForegroundColor White
-Write-Host "========================================================`n" -ForegroundColor Cyan
+. (Join-Path $PSScriptRoot 'generate-workflow.ps1')
