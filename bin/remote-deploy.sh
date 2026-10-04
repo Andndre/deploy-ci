@@ -18,6 +18,15 @@ maintenance=${14:-false}
 
 fail() { echo "Hostinger $phase: $*" >&2; exit 1; }
 trap 'echo "Hostinger remote phase $phase failed at line $LINENO" >&2' ERR
+cleanup_trap() {
+  local code=$?
+  if [[ "$phase" == prepare && "$maintenance" == true && -f artisan && $code -ne 0 ]]; then
+    echo 'Deployment prepare aborted; recovering from maintenance mode' >&2
+    php artisan up 2>/dev/null || true
+  fi
+}
+trap cleanup_trap EXIT
+
 (( BASH_VERSINFO[0] >= 4 )) || fail 'Bash 4 or newer is required'
 for tool in find sha256sum cut stat dirname basename cat mkdir printf touch mv sort mktemp date grep rm rsync awk wc; do
   command -v "$tool" >/dev/null || fail "Required server command is unavailable: $tool"
@@ -132,13 +141,16 @@ case "$phase" in
       : > "$baseline"
       for dir in "${asset_dirs[@]}"; do
         [[ -d "$dir" ]] || continue
+        baseline_scan=$(mktemp "$state/scan.XXXXXX")
+        find "$dir" -type f -print0 > "$baseline_scan"
         while IFS= read -r -d '' path; do
           if [[ "$(basename -- "$path")" =~ [.-][a-zA-Z0-9_-]{8,}\. ]]; then
             safe_asset "$path"
             hash=$(sha256sum -- "$path" | cut -d ' ' -f 1)
             printf '%s  %s\n' "$hash" "$path" >> "$baseline"
           fi
-        done < <(find "$dir" -type f -print0)
+        done < "$baseline_scan"
+        rm -f -- "$baseline_scan"
       done
       touch -- "$state/baseline-done"
     fi
@@ -172,7 +184,10 @@ case "$phase" in
       cat -- "$published" > "$verified_snapshot"
       mv -- "$verified_snapshot" "$state/last-verified.txt"
     fi
-    mapfile -t histories < <(find "$state/history" -maxdepth 1 -type f -name '*.txt' | sort -r)
+    hist_tmp=$(mktemp "$state/hist.XXXXXX")
+    find "$state/history" -maxdepth 1 -type f -name '*.txt' | sort -r > "$hist_tmp"
+    mapfile -t histories < "$hist_tmp"
+    rm -f -- "$hist_tmp"
     retained=$(mktemp)
     trap 'rm -f -- "$retained"' EXIT
     # HTTP failures must not age out the last publicly verified application's
@@ -190,13 +205,16 @@ case "$phase" in
       index=$((index + 1))
     done
     # Failed deployments are protected for the grace period, then reclaimed.
+    pending_tmp=$(mktemp "$state/pending.XXXXXX")
+    find "$state/pending" -maxdepth 1 -type f -name '*.txt' -print0 > "$pending_tmp"
     while IFS= read -r -d '' inventory; do
       if (( now - $(stat -c %Y -- "$inventory") < days * 86400 )); then
         cat -- "$inventory" >> "$retained"
       else
         expired+=("$inventory")
       fi
-    done < <(find "$state/pending" -maxdepth 1 -type f -name '*.txt' -print0)
+    done < "$pending_tmp"
+    rm -f -- "$pending_tmp"
     deleted=0
     for inventory in "${expired[@]}"; do
       while read -r hash path; do
