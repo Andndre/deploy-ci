@@ -4,6 +4,57 @@ function ConvertTo-YamlString {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
+function Get-MatchingKnownHosts {
+    param(
+        [string]$Path,
+        [string]$HostName,
+        [int]$Port
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $content = Get-Content -LiteralPath $Path -Raw
+    if ([string]::IsNullOrWhiteSpace($content)) { return '' }
+
+    $searchHost = if ($Port -and $Port -ne 22) { "[$HostName]:$Port" } else { $HostName }
+    $extracted = ''
+
+    if (Get-Command ssh-keygen -ErrorAction SilentlyContinue) {
+        try {
+            $out = & ssh-keygen -F $searchHost -f $Path 2>$null
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($out)) {
+                $lines = @($out -split "`r?`n" | Where-Object { $_ -and -not $_.StartsWith('#') })
+                if ($lines.Count -gt 0) {
+                    $extracted = ($lines -join "`n") + "`n"
+                }
+            }
+        } catch { }
+    }
+
+    if (-not $extracted) {
+        $escapedHost = [regex]::Escape($HostName)
+        $pattern = if ($Port -and $Port -ne 22) {
+            "(\[${escapedHost}\]:${Port}|^${escapedHost}\b)"
+        } else {
+            "(^${escapedHost}\b|\[${escapedHost}\])"
+        }
+        $matching = @($content -split "`r?`n" | Where-Object { $_ -match $pattern -and -not $_.StartsWith('#') })
+        if ($matching.Count -gt 0) {
+            $extracted = ($matching -join "`n") + "`n"
+        }
+    }
+
+    if ($extracted) {
+        return $extracted
+    }
+
+    $nonCommentLines = @($content -split "`r?`n" | Where-Object { $_ -and -not $_.StartsWith('#') })
+    if ($nonCommentLines.Count -le 3) {
+        return $content
+    }
+
+    Write-Warning "Could not isolate specific fingerprint for $searchHost from $Path. Uploading full file."
+    return $content
+}
+
 function Assert-RelativePath {
     param([string]$Value)
     if ($Value -notmatch '^[a-zA-Z0-9_./-]+$' -or $Value.StartsWith('/') -or
@@ -284,6 +335,7 @@ $profileConfig = [ordered]@{
     max_retained_bytes = ([long]$MaxRetainedMiB * 1048576)
     php_version = $PhpVersion
     migrate = [bool]$IncludeMigration
+    maintenance = [bool]$MaintenanceMode
     deploy_url = $DeployUrl
     page_contains = $PageContains
     max_assets = 6
@@ -358,12 +410,16 @@ try {
 } catch { Write-Warning 'Unable to update the optional Hostinger configuration cache.' }
 
 if ($uploadSecrets) {
+    $knownHostsContent = Get-MatchingKnownHosts -Path $SshKnownHostsPath -HostName $SshHost -Port $SshPort
+    if ([string]::IsNullOrWhiteSpace($knownHostsContent)) {
+        $knownHostsContent = (Get-Content -LiteralPath $SshKnownHostsPath -Raw)
+    }
     $secrets = [ordered]@{
         HOSTINGER_SSH_HOST = $SshHost
         HOSTINGER_SSH_USER = $SshUser
         HOSTINGER_SSH_PORT = [string]$SshPort
         HOSTINGER_TARGET_DIR = $TargetDir
-        HOSTINGER_SSH_KNOWN_HOSTS = (Get-Content -LiteralPath $SshKnownHostsPath -Raw)
+        HOSTINGER_SSH_KNOWN_HOSTS = $knownHostsContent
         HOSTINGER_SSH_KEY = (Get-Content -LiteralPath $SshKeyPath -Raw)
     }
     foreach ($name in $secrets.Keys) {

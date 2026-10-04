@@ -105,17 +105,16 @@ Before uploading, the remote script checks required commands, target/parent acce
 
 Automatic migrations are **off by default**. `-IncludeMigration` explicitly enables `php artisan migrate --force`. The tool does not validate migration safety, back up the database, undo partial schema changes, or prove compatibility with concurrent requests. Use production-reviewed migrations and an independent recovery plan; a failed migration needs operator investigation.
 
-In-place PHP/vendor updates can expose mixed application versions during publication. Retained assets and delayed rsync updates reduce asset failures but do not make the application atomic or reset server-managed OPcache. Applications requiring reliable rollback or uninterrupted releases need a separately validated release-directory/runtime design. Do not assume symlink switching or OPcache restart permissions exist on every shared hosting account.
+In-place PHP/vendor updates can expose mixed application versions during publication. To mitigate race conditions, `-MaintenanceMode` enables graceful Laravel maintenance mode (`php artisan down --retry=15` and `php artisan up`) around application transfer. Retained assets and delayed rsync updates reduce asset failures but do not make the application atomic or reset server-managed OPcache. Applications requiring reliable rollback or uninterrupted releases need a separately validated release-directory/runtime design. Do not assume symlink switching or OPcache restart permissions exist on every shared hosting account.
 
-Configure these repository or environment secrets: `HOSTINGER_SSH_HOST`, `HOSTINGER_SSH_USER`, `HOSTINGER_SSH_PORT`, `HOSTINGER_TARGET_DIR`, `HOSTINGER_SSH_KEY` and **`HOSTINGER_SSH_KNOWN_HOSTS`**. The last must contain independently verified OpenSSH host keys (including `[host]:port` for a nonstandard port). With automatic secret setup, pass `-SshKnownHostsPath` and `-SshKeyPath`; values are sent through stdin and each `gh` exit code is checked. [GitHub CLI secret input documentation](https://cli.github.com/manual/gh_secret_set).
+Configure these repository or environment secrets: `HOSTINGER_SSH_HOST`, `HOSTINGER_SSH_USER`, `HOSTINGER_SSH_PORT`, `HOSTINGER_TARGET_DIR`, `HOSTINGER_SSH_KEY` and **`HOSTINGER_SSH_KNOWN_HOSTS`**. The wizard automatically extracts only the host-specific key entry for Hostinger rather than leaking your entire `known_hosts` file. With automatic secret setup, pass `-SshKnownHostsPath` and `-SshKeyPath`; values are sent through stdin and each `gh` exit code is checked. Pass `-Preflight` to run a live pre-flight SSH and remote environment verification before writing secrets or generating files. [GitHub CLI secret input documentation](https://cli.github.com/manual/gh_secret_set).
 
 Old-browser asset requests are supported within the retention policy, not indefinitely. Keeping previous chunks addresses [Vite dynamic-import failures after deployments](https://vite.dev/guide/build#load-error-handling). A `403` or `429` is recorded and fails verification; it could reflect application rules, rate limiting or an intermediary challenge. The response does not establish the cause, and an HTTP check samples public responses rather than proving complete application health. Cleanup protects the current publication and the last verified assets when verification fails; failures during transfer/optimization can still leave inventories and uploads awaiting a later deployment. Budget exhaustion stops new uploads rather than automatically sacrificing retained assets.
 
 ## Tests
 
 ```powershell
-python -m pip install -r tests/requirements.txt
-python -m unittest discover -s tests -v
+uv run python -m unittest discover -s tests -v
 ```
 
 Tests cover generator immutability and replacement, both workflow modes, package managers, failed secret commands, remote collision/path/retention behavior, and HTTP failures. Linux CI additionally runs an actual rsync transfer across two releases. Set `POWERSHELL_EXE` to run the generator tests with Windows PowerShell 5.1; Windows remote-script tests use Git Bash.

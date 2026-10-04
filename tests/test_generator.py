@@ -171,6 +171,35 @@ class GeneratorTests(unittest.TestCase):
         self.assertNotIn('FAKE-KEY-FOR-TEST-ONLY', result.stdout + result.stderr)
         self.assertNotIn('All six SSH secrets configured successfully', result.stdout)
 
+    def test_known_hosts_isolates_host_entry_and_protects_other_servers(self):
+        key = self.root / 'fake-private-key'
+        key.write_text('FAKE-KEY')
+        known = self.root / 'known_hosts'
+        known.write_text(
+            'other-private-server.test ssh-ed25519 OTHER-SECRET-KEY\n'
+            'example.test ssh-ed25519 HOSTINGER-KEY\n'
+            'github.com ssh-rsa GITHUB-KEY\n'
+        )
+        log = self.root / 'gh-log.jsonl'
+        wrapper = self.root / 'wrapper.ps1'
+        wrapper.write_text("""function global:gh {
+  $value = $input | Out-String
+  @{ args = @($args); stdin = $value } | ConvertTo-Json -Compress | Add-Content -LiteralPath '""" + str(log).replace("'", "''") + """'
+  $global:LASTEXITCODE = 0
+}
+& '""" + str(ROOT / 'bin/setup-hostinger-ci.ps1').replace("'", "''") + "' @args\n")
+        result = self.generate('-WithoutTests', '-SshHost', 'example.test', '-SshUser', 'test',
+                               '-SshKeyPath', str(key), '-SshKnownHostsPath', str(known),
+                               '-MaintenanceMode', secrets=True, wrapper=wrapper)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        entries = [json.loads(line) for line in log.read_text(encoding='utf-8-sig').splitlines()]
+        known_secret = next(e for e in entries if e['args'] == ['secret', 'set', 'HOSTINGER_SSH_KNOWN_HOSTS'])
+        self.assertIn('HOSTINGER-KEY', known_secret['stdin'])
+        self.assertNotIn('OTHER-SECRET-KEY', known_secret['stdin'])
+        self.assertNotIn('GITHUB-KEY', known_secret['stdin'])
+        config = json.loads((self.root / '.github/hostinger/profile.json').read_text())
+        self.assertTrue(config.get('maintenance'))
+
 
 if __name__ == '__main__':
     unittest.main()

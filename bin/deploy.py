@@ -105,7 +105,8 @@ class Deployment:
                      str(self.config.get("max_retained_files", 10000)),
                      str(self.config.get("max_retained_bytes", 512 * 1024 * 1024)), str(incoming_bytes),
                      self.config.get("php_version", ""),
-                     str(self.env.get("HOSTINGER_HTTP_VERIFIED", "false")).lower()]
+                     str(self.env.get("HOSTINGER_HTTP_VERIFIED", "false")).lower(),
+                     str(self.config.get("maintenance", False)).lower()]
         subprocess.run(self.ssh + [self.destination, "bash -s -- " + shlex.join(arguments)],
                        input=script, text=True, check=True)
 

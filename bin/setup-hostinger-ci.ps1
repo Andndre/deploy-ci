@@ -15,6 +15,9 @@
 #>
 
 [CmdletBinding()]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidAssignmentToAutomaticVariable', 'Profile', Justification = 'Profile parameter is part of the public CLI contract')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'lintCmd', Justification = 'Consumed by dot-sourced generate-workflow.ps1')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'useGated', Justification = 'Consumed by dot-sourced generate-workflow.ps1')]
 param (
     [Parameter(Position = 0)]
     [string]$TargetDir = "",
@@ -78,6 +81,12 @@ param (
     [switch]$WithoutTests,
 
     [switch]$IncludeMigration,
+
+    [switch]$MaintenanceMode,
+
+    [switch]$Preflight,
+
+    [switch]$SkipPreflight,
 
     [switch]$SkipSecrets,
 
@@ -305,6 +314,11 @@ if (-not $NonInteractive) {
         $IncludeMigration = Confirm-Choice -Message "Automatically run 'php artisan migrate --force' after deployment?" -DefaultYes $false
     }
 
+    # Maintenance Mode (Graceful downtime buffer during transfer)
+    if ($Profile -eq 'laravel-vite' -and -not $PSBoundParameters.ContainsKey('MaintenanceMode')) {
+        $MaintenanceMode = Confirm-Choice -Message "Enable graceful Maintenance Mode ('php artisan down/up') during deployment?" -DefaultYes $true
+    }
+
     # Hostinger SSH Host / IP
     if ([string]::IsNullOrWhiteSpace($SshHost)) {
         $defaultHost = if ($cachedConfig.SshHost) { $cachedConfig.SshHost } else { "" }
@@ -346,6 +360,45 @@ if (-not $NonInteractive) {
         }
         $TargetDir = Read-InputWithDefault -Message "Path to TARGET_DIR on Hostinger" -DefaultValue $defaultTarget -Required $true
     }
+
+    # Pre-Flight SSH and Remote Environment Check
+    $shouldPreflight = $false
+    if ($Preflight) {
+        $shouldPreflight = $true
+    } elseif (-not $SkipPreflight -and -not $SkipSecrets -and -not $DryRun) {
+        $shouldPreflight = Confirm-Choice -Message "Test SSH connection and remote environment now?" -DefaultYes $true
+    }
+
+    if ($shouldPreflight -and -not [string]::IsNullOrWhiteSpace($SshHost) -and -not [string]::IsNullOrWhiteSpace($SshUser)) {
+        if (Test-Path -LiteralPath $SshKeyPath -PathType Leaf) {
+            Write-Host "`n  -> Testing SSH connection to Hostinger ($SshHost on port $SshPort)..." -ForegroundColor Cyan
+            $testCmd = "if [ -d '$TargetDir' ]; then echo 'DIR_OK'; else echo 'DIR_MISSING'; fi; if [ -f '$TargetDir/.env' ]; then echo 'ENV_OK'; else echo 'ENV_MISSING'; fi"
+            $preflightOut = & ssh -p $SshPort -i $SshKeyPath -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 "$SshUser@$SshHost" $testCmd 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "Pre-flight SSH connection test failed (exit code $LASTEXITCODE):`n$preflightOut"
+                if (-not (Confirm-Choice -Message "Continue anyway despite connection failure?" -DefaultYes $false)) {
+                    Write-Error "Setup aborted by user due to failed pre-flight connection test."
+                    exit 1
+                }
+            } else {
+                Write-Host "  -> SSH connection successful!" -ForegroundColor Green
+                if ($preflightOut -match 'DIR_MISSING') {
+                    Write-Warning "Target directory does not exist on server: $TargetDir"
+                    if (Confirm-Choice -Message "Create destination directory '$TargetDir' on server now?" -DefaultYes $true) {
+                        & ssh -p $SshPort -i $SshKeyPath -o BatchMode=yes "$SshUser@$SshHost" "mkdir -p '$TargetDir'"
+                        if ($LASTEXITCODE -eq 0) {
+                            Write-Host "  -> Destination directory created successfully!" -ForegroundColor Green
+                        } else {
+                            Write-Warning "Failed to create destination directory automatically. Please create it manually."
+                        }
+                    }
+                }
+                if ($preflightOut -match 'ENV_MISSING' -and $Profile -eq 'laravel-vite') {
+                    Write-Warning "No .env file found at '$TargetDir/.env' on server.`n     Remember to create production .env on Hostinger before pushing code!"
+                }
+            }
+        }
+    }
 } else {
     # Non-interactive fallback
     if ([string]::IsNullOrWhiteSpace($Branch)) { $Branch = $detectedBranch }
@@ -353,6 +406,15 @@ if (-not $NonInteractive) {
     if ($SshPort -le 0) { $SshPort = 65002 }
     if ([string]::IsNullOrWhiteSpace($SshKeyPath)) { $SshKeyPath = Join-Path $HOME ".ssh\id_ed25519" }
     $useGated = ($WithTests.IsPresent -or (($hasPest -or $hasPhpUnit -or $hasPint -or $hasEslint) -and -not $WithoutTests.IsPresent))
+
+    if ($Preflight -and -not [string]::IsNullOrWhiteSpace($SshHost) -and -not [string]::IsNullOrWhiteSpace($SshUser) -and (Test-Path -LiteralPath $SshKeyPath -PathType Leaf)) {
+        $testCmd = "if [ -d '$TargetDir' ]; then echo 'DIR_OK'; else echo 'DIR_MISSING'; fi; if [ -f '$TargetDir/.env' ]; then echo 'ENV_OK'; else echo 'ENV_MISSING'; fi"
+        $preflightOut = & ssh -p $SshPort -i $SshKeyPath -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 "$SshUser@$SshHost" $testCmd 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Pre-flight SSH test failed:`n$preflightOut"
+            exit 1
+        }
+    }
 }
 
 . (Join-Path $PSScriptRoot 'generate-workflow.ps1')

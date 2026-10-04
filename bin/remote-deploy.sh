@@ -14,6 +14,7 @@ max_bytes=${10:-536870912}
 incoming_bytes=${11:-0}
 php_expected=${12:-}
 http_verified=${13:-false}
+maintenance=${14:-false}
 
 fail() { echo "Hostinger $phase: $*" >&2; exit 1; }
 trap 'echo "Hostinger remote phase $phase failed at line $LINENO" >&2' ERR
@@ -71,6 +72,10 @@ case "$phase" in
       [[ -f .env ]] || fail 'Create the production .env on the server before deployment; local credentials are excluded'
       if [[ -n "$php_expected" ]]; then
         [[ "$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')" == "$php_expected" ]] || fail "PHP CLI must match configured version $php_expected"
+      fi
+      if [[ "$maintenance" == true && -f artisan ]]; then
+        echo 'Entering maintenance mode during deployment'
+        php artisan down --retry=15 2>/dev/null || true
       fi
     fi
     missing_files=0
@@ -151,6 +156,10 @@ case "$phase" in
       php artisan config:cache
       php artisan route:cache
       php artisan view:cache
+      if [[ "$maintenance" == true ]]; then
+        echo 'Exiting maintenance mode after deployment'
+        php artisan up 2>/dev/null || true
+      fi
     fi
     ;;
   cleanup)
@@ -203,6 +212,9 @@ case "$phase" in
       done < "$inventory"
       rm -- "$inventory"
     done
+    if [[ "$profile" == laravel-vite && "$maintenance" == true && -f artisan ]]; then
+      php artisan up 2>/dev/null || true
+    fi
     echo "Asset cleanup: $deleted files removed; last $keep releases and $days days protected."
     ;;
   *) echo "Unknown deployment phase: $phase" >&2; exit 1 ;;
