@@ -14,7 +14,9 @@ $RECYCLE.BIN/
 *.sln
 *.sw?
 
-# Local test outputs
+# Local test outputs & Python environments
 *.log
 __pycache__/
+*.py[cod]
+.venv/
 .test-output/

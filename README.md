@@ -111,6 +111,9 @@ Configure these repository or environment secrets: `HOSTINGER_SSH_HOST`, `HOSTIN
 
 Old-browser asset requests are supported within the retention policy, not indefinitely. Keeping previous chunks addresses [Vite dynamic-import failures after deployments](https://vite.dev/guide/build#load-error-handling). A `403` or `429` is recorded and fails verification; it could reflect application rules, rate limiting or an intermediary challenge. The response does not establish the cause, and an HTTP check samples public responses rather than proving complete application health. Cleanup protects the current publication and the last verified assets when verification fails; failures during transfer/optimization can still leave inventories and uploads awaiting a later deployment. Budget exhaustion stops new uploads rather than automatically sacrificing retained assets.
 
+> [!TIP]
+> **Cloudflare & Hostinger CDN (Double-Proxy Warning):** If your domain already uses your own Cloudflare account (nameservers set to Cloudflare with proxied records), **disable Hostinger CDN in hPanel**. Running Hostinger CDN behind Cloudflare creates a redundant double-CDN layer (`Cloudflare ➔ Hostinger CDN ➔ LiteSpeed Origin`) that frequently triggers false-positive `429 Too Many Requests` rate limiting. In Cloudflare DNS, point the `A` record directly to the origin web server IP, not the Hostinger CDN anycast IP.
+
 ## Tests
 
 ```powershell

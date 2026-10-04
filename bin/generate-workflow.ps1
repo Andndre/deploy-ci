@@ -185,7 +185,7 @@ if ($Profile -eq 'laravel-vite') {
         uses: shivammathur/setup-php@v2
         with:
           php-version: $(ConvertTo-YamlString $PhpVersion)
-          extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, pdo_sqlite, bcmath, curl, zip
+          extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, pdo_sqlite, bcmath, curl, zip, gd, exif
           coverage: none
 
 "@
