@@ -91,9 +91,10 @@ class Deployment:
             value = self.env.get(variable, "")
             if not value.strip():
                 raise ValueError(f"Missing secret: {variable}")
+            value = value.replace("\r\n", "\n").replace("\r", "\n").rstrip()
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-                stream.write(value.rstrip() + "\n")
+                stream.write(value + "\n")
             path.chmod(0o600)
 
     def remote(self, phase, run, inventory=None, incoming_bytes=0):
