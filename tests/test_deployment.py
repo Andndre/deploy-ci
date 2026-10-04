@@ -96,6 +96,8 @@ class DeploymentTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 deploy.target_path(path)
         deploy.target_path("/home/test/my app's files")
+        self.assertEqual(deploy.target_path("/home/test/app/"), "/home/test/app")
+        self.assertEqual(deploy.target_path("  /home/test/app\n"), "/home/test/app")
         for key in ('HOSTINGER_SSH_HOST', 'HOSTINGER_SSH_USER'):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 deploy.Deployment(self.config, self.env | {key: '-oProxyCommand=bad'})

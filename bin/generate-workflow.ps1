@@ -415,12 +415,12 @@ if ($uploadSecrets) {
         $knownHostsContent = (Get-Content -LiteralPath $SshKnownHostsPath -Raw)
     }
     $secrets = [ordered]@{
-        HOSTINGER_SSH_HOST = $SshHost
-        HOSTINGER_SSH_USER = $SshUser
+        HOSTINGER_SSH_HOST = $SshHost.Trim()
+        HOSTINGER_SSH_USER = $SshUser.Trim()
         HOSTINGER_SSH_PORT = [string]$SshPort
-        HOSTINGER_TARGET_DIR = $TargetDir
-        HOSTINGER_SSH_KNOWN_HOSTS = $knownHostsContent
-        HOSTINGER_SSH_KEY = (Get-Content -LiteralPath $SshKeyPath -Raw)
+        HOSTINGER_TARGET_DIR = $TargetDir.Trim().TrimEnd('/').TrimEnd('\')
+        HOSTINGER_SSH_KNOWN_HOSTS = $knownHostsContent.Trim()
+        HOSTINGER_SSH_KEY = (Get-Content -LiteralPath $SshKeyPath -Raw).Trim()
     }
     foreach ($name in $secrets.Keys) {
         $secrets[$name] | & gh secret set $name

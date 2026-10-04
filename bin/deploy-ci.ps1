@@ -359,6 +359,9 @@ if (-not $NonInteractive) {
             ""
         }
         $TargetDir = Read-InputWithDefault -Message "Path to TARGET_DIR on Hostinger" -DefaultValue $defaultTarget -Required $true
+        if (-not [string]::IsNullOrWhiteSpace($TargetDir)) {
+            $TargetDir = $TargetDir.Trim().TrimEnd('/').TrimEnd('\')
+        }
     }
 
     # Pre-Flight SSH and Remote Environment Check
@@ -406,6 +409,7 @@ if (-not $NonInteractive) {
     if ($SshPort -le 0) { $SshPort = 65002 }
     if ([string]::IsNullOrWhiteSpace($SshKeyPath)) { $SshKeyPath = Join-Path $HOME ".ssh\id_ed25519" }
     $useGated = ($WithTests.IsPresent -or (($hasPest -or $hasPhpUnit -or $hasPint -or $hasEslint) -and -not $WithoutTests.IsPresent))
+    if (-not [string]::IsNullOrWhiteSpace($TargetDir)) { $TargetDir = $TargetDir.Trim().TrimEnd('/').TrimEnd('\') }
 
     if ($Preflight -and -not [string]::IsNullOrWhiteSpace($SshHost) -and -not [string]::IsNullOrWhiteSpace($SshUser) -and (Test-Path -LiteralPath $SshKeyPath -PathType Leaf)) {
         $testCmd = "if [ -d '$TargetDir' ]; then echo 'DIR_OK'; else echo 'DIR_MISSING'; fi; if [ -f '$TargetDir/.env' ]; then echo 'ENV_OK'; else echo 'ENV_MISSING'; fi"

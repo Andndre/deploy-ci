@@ -21,6 +21,7 @@ def relative_path(value):
 
 
 def target_path(value):
+    value = value.strip().rstrip("/")
     path = PurePosixPath(value)
     if (not path.is_absolute() or len(path.parts) < 4 or ".." in path.parts
             or str(path) != value or any(ord(c) < 32 for c in value)):
@@ -55,9 +56,9 @@ class Deployment:
         self.config = config
         self.env = os.environ if environment is None else environment
         self.target = target_path(self.env.get("HOSTINGER_TARGET_DIR", ""))
-        host = self.env.get("HOSTINGER_SSH_HOST", "")
-        user = self.env.get("HOSTINGER_SSH_USER", "")
-        port = self.env.get("HOSTINGER_SSH_PORT", "65002")
+        host = self.env.get("HOSTINGER_SSH_HOST", "").strip()
+        user = self.env.get("HOSTINGER_SSH_USER", "").strip()
+        port = self.env.get("HOSTINGER_SSH_PORT", "65002").strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.:-]*", host):
             raise ValueError("Invalid SSH host")
         if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_-]*", user):
