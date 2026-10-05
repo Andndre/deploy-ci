@@ -351,10 +351,10 @@ if (-not $NonInteractive) {
     # Target Directory on Hostinger (Auto-infer domain folder)
     if ([string]::IsNullOrWhiteSpace($TargetDir)) {
         $currentDirName = (Get-Item .).Name
-        $defaultTarget = if (-not [string]::IsNullOrWhiteSpace($SshUser)) {
-            if ($Profile -eq 'laravel-vite') { "/home/$SshUser/domains/$currentDirName/app" } else { "/home/$SshUser/domains/$currentDirName/public_html" }
-        } elseif ($cachedConfig.TargetDir) {
+        $defaultTarget = if ($cachedConfig.TargetDir) {
             $cachedConfig.TargetDir
+        } elseif (-not [string]::IsNullOrWhiteSpace($SshUser)) {
+            "/home/$SshUser/domains/$currentDirName/public_html"
         } else {
             ""
         }
@@ -397,7 +397,24 @@ if (-not $NonInteractive) {
                     }
                 }
                 if ($preflightOut -match 'ENV_MISSING' -and $Profile -eq 'laravel-vite') {
-                    Write-Warning "No .env file found at '$TargetDir/.env' on server.`n     Remember to create production .env on Hostinger before pushing code!"
+                    Write-Warning "No .env file found at '$TargetDir/.env' on server."
+                    if (Test-Path -LiteralPath '.env.example') {
+                        if (Confirm-Choice -Message "Upload .env.example as baseline production .env to server now?" -DefaultYes $true) {
+                            $envExampleContent = (Get-Content -LiteralPath '.env.example' -Raw)
+                            $envExampleContent = $envExampleContent -replace '(?m)^APP_ENV=.*$', 'APP_ENV=production'
+                            $envExampleContent = $envExampleContent -replace '(?m)^APP_DEBUG=.*$', 'APP_DEBUG=false'
+                            $envExampleContent = $envExampleContent.Replace("`r`n", "`n")
+                            $uploadEnvCmd = "cat << 'HOSTINGER_ENV_EOF' > '$TargetDir/.env'`n$envExampleContent`nHOSTINGER_ENV_EOF"
+                            & ssh -p $SshPort -i $SshKeyPath -o BatchMode=yes "$SshUser@$SshHost" $uploadEnvCmd
+                            if ($LASTEXITCODE -eq 0) {
+                                Write-Host "  -> Baseline .env uploaded successfully! (APP_KEY will be generated during deploy; configure DB in hPanel)" -ForegroundColor Green
+                            } else {
+                                Write-Warning "Failed to upload .env template automatically. Please create it manually on server."
+                            }
+                        }
+                    } else {
+                        Write-Warning "Remember to create production .env on Hostinger before pushing code!"
+                    }
                 }
             }
         }

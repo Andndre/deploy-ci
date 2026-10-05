@@ -16,13 +16,25 @@ php_expected=${12:-}
 http_verified=${13:-false}
 maintenance=${14:-false}
 
+php_bin="php"
+if [[ -n "$php_expected" ]]; then
+  version_clean="${php_expected//./}"
+  alt_php="/opt/alt/php${version_clean}/usr/bin/php"
+  ea_php="/usr/bin/ea-php${version_clean}"
+  if [[ -x "$alt_php" ]]; then
+    php_bin="$alt_php"
+  elif [[ -x "$ea_php" ]]; then
+    php_bin="$ea_php"
+  fi
+fi
+
 fail() { echo "Hostinger $phase: $*" >&2; exit 1; }
 trap 'echo "Hostinger remote phase $phase failed at line $LINENO" >&2' ERR
 cleanup_trap() {
   local code=$?
   if [[ "$phase" == prepare && "$maintenance" == true && -f artisan && $code -ne 0 ]]; then
     echo 'Deployment prepare aborted; recovering from maintenance mode' >&2
-    php artisan up 2>/dev/null || true
+    "$php_bin" artisan up 2>/dev/null || true
   fi
 }
 trap cleanup_trap EXIT
@@ -77,14 +89,14 @@ done
 case "$phase" in
   prepare)
     if [[ "$profile" == laravel-vite ]]; then
-      command -v php >/dev/null || fail 'PHP CLI is required for Laravel'
+      command -v "$php_bin" >/dev/null || fail "PHP CLI ($php_bin) is required for Laravel"
       [[ -f .env ]] || fail 'Create the production .env on the server before deployment; local credentials are excluded'
       if [[ -n "$php_expected" ]]; then
-        [[ "$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')" == "$php_expected" ]] || fail "PHP CLI must match configured version $php_expected"
+        [[ "$("$php_bin" -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')" == "$php_expected" ]] || fail "PHP CLI ($php_bin) must match configured version $php_expected"
       fi
       if [[ "$maintenance" == true && -f artisan ]]; then
         echo 'Entering maintenance mode during deployment'
-        php artisan down --retry=15 2>/dev/null || true
+        "$php_bin" artisan down --retry=15 2>/dev/null || true
       fi
     fi
     missing_files=0
@@ -160,17 +172,21 @@ case "$phase" in
   optimize)
     if [[ "$profile" == laravel-vite ]]; then
       [[ -f artisan ]]
-      php artisan optimize:clear
+      if grep -qE '^APP_KEY=\s*$' .env 2>/dev/null || ! grep -q '^APP_KEY=' .env 2>/dev/null; then
+        echo 'Generating application encryption key'
+        "$php_bin" artisan key:generate --force
+      fi
+      "$php_bin" artisan optimize:clear
       if [[ "$migrate" == true ]]; then
         echo 'Explicit database migration option enabled; failures are not automatically rolled back'
-        php artisan migrate --force
+        "$php_bin" artisan migrate --force
       fi
-      php artisan config:cache
-      php artisan route:cache
-      php artisan view:cache
+      "$php_bin" artisan config:cache
+      "$php_bin" artisan route:cache
+      "$php_bin" artisan view:cache
       if [[ "$maintenance" == true ]]; then
         echo 'Exiting maintenance mode after deployment'
-        php artisan up 2>/dev/null || true
+        "$php_bin" artisan up 2>/dev/null || true
       fi
     fi
     ;;
