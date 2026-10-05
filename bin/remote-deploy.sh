@@ -176,11 +176,11 @@ case "$phase" in
         echo 'Generating application encryption key'
         "$php_bin" artisan key:generate --force
       fi
-      "$php_bin" artisan optimize:clear
       if [[ "$migrate" == true ]]; then
         echo 'Explicit database migration option enabled; failures are not automatically rolled back'
         "$php_bin" artisan migrate --force
       fi
+      "$php_bin" artisan optimize:clear || true
       "$php_bin" artisan config:cache
       "$php_bin" artisan route:cache
       "$php_bin" artisan view:cache

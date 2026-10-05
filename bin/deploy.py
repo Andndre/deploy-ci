@@ -21,11 +21,21 @@ def relative_path(value):
 
 
 def target_path(value):
-    value = value.strip().rstrip("/")
+    if not value or not value.strip():
+        raise ValueError("HOSTINGER_TARGET_DIR secret is empty or not set")
+    value = value.strip().strip("'\"").rstrip("/")
     path = PurePosixPath(value)
-    if (not path.is_absolute() or len(path.parts) < 4 or ".." in path.parts
-            or str(path) != value or any(ord(c) < 32 for c in value)):
-        raise ValueError("TARGET_DIR must be a normalized absolute path to an existing application directory")
+    if not path.is_absolute():
+        raise ValueError(f"TARGET_DIR must be an absolute path (got {value!r})")
+    if len(path.parts) < 4:
+        raise ValueError(f"TARGET_DIR path is too shallow (got {len(path.parts)} parts: {path.parts!r})")
+    if ".." in path.parts:
+        raise ValueError(f"TARGET_DIR contains '..' traversal (got {value!r})")
+    if str(path) != value:
+        raise ValueError(f"TARGET_DIR is not normalized (normalized={str(path)!r}, original={value!r})")
+    if any(ord(c) < 32 for c in value):
+        bad = [ord(c) for c in value if ord(c) < 32]
+        raise ValueError(f"TARGET_DIR contains control characters (ASCII: {bad})")
     return value
 
 
