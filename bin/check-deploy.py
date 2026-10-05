@@ -4,8 +4,10 @@ from datetime import datetime, timezone
 import hashlib
 from html.parser import HTMLParser
 import json
+import os
 from pathlib import Path
 import re
+import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urljoin, urlsplit
 from urllib.request import Request, urlopen
@@ -143,12 +145,158 @@ def verify(config, directory):
     print(f"Verified HTML and {len(assets)} JS/CSS dependencies")
 
 
+def diagnose_error(url, error_message):
+    err = error_message.lower()
+    host = urlsplit(url).netloc or url
+
+    if any(k in err for k in ["name or service not known", "getaddrinfo failed", "nodename nor servname provided", "non-existent domain"]):
+        subdomain = host.split(".")[0] if "." in host else host
+        return {
+            "title": f"DNS Resolution Failed for {host}",
+            "cause": f"Domain atau subdomain '{host}' tidak ditemukan di sistem DNS (Domain Not Found).",
+            "actions": [
+                f"Jika domain menggunakan Cloudflare atau DNS eksternal, tambahkan DNS Record: Type 'A', Name '{subdomain}', IPv4 address '<IP Server Hostinger>' (contoh: 145.79.14.222).",
+                "Jika baru saja menambahkan record DNS, tunggu 1-5 menit hingga proses propagasi DNS global selesai.",
+                f"Pastikan penulisan deploy_url di .github/hostinger/profile.json sudah benar: '{url}'."
+            ]
+        }
+    if any(k in err for k in ["connection refused", "errno 111"]):
+        return {
+            "title": f"Connection Refused by {host}",
+            "cause": f"Koneksi ke port HTTP/HTTPS pada '{host}' ditolak oleh web server.",
+            "actions": [
+                "Periksa apakah Web Server (LiteSpeed / Apache / Nginx) aktif di hPanel Hostinger.",
+                "Periksa apakah protokol URL sudah benar (http:// vs https://).",
+                "Pastikan deploy_url bukan 'localhost' atau '127.0.0.1'."
+            ]
+        }
+    if any(k in err for k in ["timed out", "timeouterror"]):
+        return {
+            "title": f"Connection Timeout to {host}",
+            "cause": f"Permintaan ke '{host}' melebihi batas waktu (timeout 30 detik).",
+            "actions": [
+                "Periksa apakah Cloudflare Bot Fight Mode, WAF, atau firewall server memblokir runner GitHub Actions.",
+                "Pastikan server Hostinger sedang online dan tidak mengalami overload."
+            ]
+        }
+    if any(k in err for k in ["certificate_verify_failed", "ssl"]):
+        return {
+            "title": f"SSL/TLS Certificate Error on {host}",
+            "cause": f"Sertifikat SSL untuk '{host}' tidak valid, kedaluwarsa, atau self-signed.",
+            "actions": [
+                "Install/aktifkan SSL certificate gratis melalui hPanel Hostinger untuk subdomain ini.",
+                "Jika domain menggunakan Cloudflare proxy, atur SSL/TLS encryption mode ke 'Full' atau 'Flexible'."
+            ]
+        }
+    if "http 403" in err:
+        return {
+            "title": f"HTTP 403 Forbidden on {host}",
+            "cause": f"Web server menolak akses ke direktori/file di '{host}'.",
+            "actions": [
+                "Pastikan permission direktori adalah 755 dan file adalah 644 di public_html.",
+                "Periksa konfigurasi file .htaccess di root public_html.",
+                "Periksa firewall Hostinger atau aturan Cloudflare WAF."
+            ]
+        }
+    if any(k in err for k in ["http 500", "http 502", "http 503"]):
+        status = re.search(r"http\s+(\d+)", err)
+        code = status.group(1) if status else "500"
+        return {
+            "title": f"HTTP {code} Server Error on {host}",
+            "cause": "Terjadi error fatal pada eksekusi aplikasi Laravel / PHP di server.",
+            "actions": [
+                "Periksa log aplikasi Laravel via SSH: tail -n 50 storage/logs/laravel.log",
+                "Pastikan kredensial database di .env server sudah sesuai dan migrasi telah berjalan.",
+                "Pastikan folder storage dan bootstrap/cache memiliki izin tulis (chmod -R 775 storage)."
+            ]
+        }
+    if any(k in err for k in ["asset bytes differ", "absent from the current build", "invalid asset mime"]):
+        return {
+            "title": "Asset Verification Mismatch",
+            "cause": "File JS/CSS yang diminta oleh HTML tidak sinkron dengan asset build Vite terkini.",
+            "actions": [
+                "Bersihkan cache Cloudflare / browser jika ada aset lama yang tertahan.",
+                "Pastikan proses build frontend (npm run build) menghasilkan bundle yang sinkron."
+            ]
+        }
+    return {
+        "title": f"HTTP Verification Failed for {host}",
+        "cause": error_message,
+        "actions": [
+            "Periksa artifact 'deploy-diagnostics' di GitHub Actions untuk response detail dari server.",
+            "Periksa status server dan konfigurasi web root di Hostinger."
+        ]
+    }
+
+
+def format_github_summary(url, diagnosis, raw_error):
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_file:
+        return
+    actions_md = "\n".join(f"{i+1}. {act}" for i, act in enumerate(diagnosis["actions"]))
+    md = f"""
+### ⚠️ Verifikasi HTTP Deployment Gagal
+
+| Parameter | Keterangan |
+|---|---|
+| **Target URL** | `{url}` |
+| **Diagnosa** | **{diagnosis['title']}** |
+| **Penyebab** | {diagnosis['cause']} |
+| **Detail Error** | `{raw_error}` |
+
+#### 🛠️ Rekomendasi Solusi:
+{actions_md}
+
+> ℹ️ **Status Deployment:** File aplikasi dan migrasi database **sudah berhasil** di-deploy ke server Hostinger. Masalah ini hanya terkait aksesibilitas HTTP publik pada URL target.
+"""
+    try:
+        with open(summary_file, "a", encoding="utf-8") as f:
+            f.write(md)
+    except OSError:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(Path(__file__).with_name("profile.json")))
     parser.add_argument("--diagnostics", default="deploy-diagnostics")
     args = parser.parse_args()
-    verify(json.loads(Path(args.config).read_text(encoding="utf-8-sig")), Path(args.diagnostics))
+
+    config = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
+    diagnostics = Path(args.diagnostics)
+
+    try:
+        verify(config, diagnostics)
+    except ValueError as err:
+        url = config.get("deploy_url", "")
+        raw_msg = str(err)
+        diag = diagnose_error(url, raw_msg)
+
+        # 1. Output GitHub Workflow Annotation
+        print(f"::error title={diag['title']}::{diag['cause']}")
+
+        # 2. Append rich markdown to GitHub Step Summary
+        format_github_summary(url, diag, raw_msg)
+
+        # 3. Print clean, structured terminal output
+        actions_txt = "\n".join(f"  {i+1}. {act}" for i, act in enumerate(diag["actions"]))
+        terminal_msg = f"""
+================================================================================
+❌ VERIFIKASI DEPLOYMENT GAGAL: {diag['title']}
+================================================================================
+URL Target : {url}
+Penyebab   : {diag['cause']}
+Detail     : {raw_msg}
+
+🛠️ REKOMENDASI TINDAKAN:
+{actions_txt}
+
+ℹ️  Catatan: File aplikasi dan database migrasi sudah berhasil di-deploy ke Hostinger.
+   Detail respons tersimpan di artifact: '{diagnostics}'
+================================================================================
+"""
+        sys.stderr.write(terminal_msg.strip() + "\n")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
