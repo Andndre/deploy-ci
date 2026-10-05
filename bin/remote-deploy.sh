@@ -174,6 +174,9 @@ case "$phase" in
       [[ -f artisan ]]
       mkdir -p storage/framework/{sessions,views,cache/data} storage/logs bootstrap/cache
       chmod -R 775 storage bootstrap/cache 2>/dev/null || true
+      chmod 755 . public 2>/dev/null || true
+      find public -type d -exec chmod 755 {} + 2>/dev/null || true
+      find public -type f -exec chmod 644 {} + 2>/dev/null || true
       if grep -qE '^APP_KEY=\s*$' .env 2>/dev/null || ! grep -q '^APP_KEY=' .env 2>/dev/null; then
         echo 'Generating application encryption key'
         "$php_bin" artisan key:generate --force

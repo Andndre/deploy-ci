@@ -364,6 +364,24 @@ if (-not $NonInteractive) {
         }
     }
 
+    # Public URL to verify after deployment
+    if ([string]::IsNullOrWhiteSpace($DeployUrl)) {
+        $inferredDomain = ""
+        if ($TargetDir -match '/domains/([^/]+)') {
+            $inferredDomain = $Matches[1]
+        }
+        $defaultUrl = if (-not [string]::IsNullOrWhiteSpace($inferredDomain)) {
+            "https://$inferredDomain"
+        } elseif (Test-Path '.env') {
+            $appUrl = Get-Content -LiteralPath '.env' | Where-Object { $_ -match '^APP_URL=' } | Select-Object -First 1
+            if ($appUrl) {
+                $val = $appUrl.Substring(8).Trim().Trim('"', "'")
+                if ($val -notmatch 'localhost' -and $val -notmatch '127\.0\.0\.1') { $val } else { "" }
+            } else { "" }
+        } else { "" }
+        $DeployUrl = Read-InputWithDefault -Message "Public URL to verify after deployment" -DefaultValue $defaultUrl -Required $true
+    }
+
     # Pre-Flight SSH and Remote Environment Check
     $shouldPreflight = $false
     if ($Preflight) {

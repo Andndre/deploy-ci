@@ -96,7 +96,15 @@ if (-not [string]::IsNullOrWhiteSpace($TargetDir) -and
 
 if ([string]::IsNullOrWhiteSpace($DeployUrl) -and (Test-Path '.env')) {
     $appUrl = Get-Content -LiteralPath '.env' | Where-Object { $_ -match '^APP_URL=' } | Select-Object -First 1
-    if ($appUrl) { $DeployUrl = $appUrl.Substring(8).Trim().Trim('"', "'") }
+    if ($appUrl) {
+        $extractedUrl = $appUrl.Substring(8).Trim().Trim('"', "'")
+        if ($extractedUrl -notmatch 'localhost' -and $extractedUrl -notmatch '127\.0\.0\.1') {
+            $DeployUrl = $extractedUrl
+        }
+    }
+}
+if ([string]::IsNullOrWhiteSpace($DeployUrl) -and -not [string]::IsNullOrWhiteSpace($TargetDir) -and $TargetDir -match '/domains/([^/]+)') {
+    $DeployUrl = "https://$($Matches[1])"
 }
 if ([string]::IsNullOrWhiteSpace($DeployUrl) -and -not $NonInteractive) {
     $DeployUrl = Read-InputWithDefault -Message 'Public URL to verify after deployment' -DefaultValue '' -Required $true
