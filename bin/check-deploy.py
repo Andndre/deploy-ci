@@ -198,6 +198,36 @@ def diagnose_error(url, error_message):
                 "Periksa firewall Hostinger atau aturan Cloudflare WAF."
             ]
         }
+    if "http 525" in err:
+        return {
+            "title": f"Cloudflare SSL Handshake Failed (HTTP 525) on {host}",
+            "cause": f"Cloudflare gagal melakukan SSL Handshake dengan server Hostinger (Origin) untuk '{host}'.",
+            "actions": [
+                "Solusi 1 (Tercepat): Di dashboard Cloudflare -> menu 'SSL/TLS', ubah mode enkripsi ke 'Flexible'. (HTTP port 80 di server Hostinger sudah aktif & verified).",
+                "Solusi 2: Di hPanel Hostinger -> menu 'SSL', install/aktifkan sertifikat SSL gratis (Let's Encrypt) untuk subdomain ini.",
+                "Catatan: Aplikasi Laravel dan database sudah 100% siap di server; masalah ini murni pada negosiasi SSL antara Cloudflare dan Hostinger."
+            ]
+        }
+    if "http 526" in err:
+        return {
+            "title": f"Invalid SSL Certificate on Origin (HTTP 526) on {host}",
+            "cause": f"Sertifikat SSL di server Hostinger tidak valid atau kedaluwarsa pada mode Cloudflare Full (Strict).",
+            "actions": [
+                "Di dashboard Cloudflare -> menu 'SSL/TLS', ubah mode enkripsi ke 'Full' (non-strict) atau 'Flexible'.",
+                "Re-issue/pasang sertifikat SSL di hPanel Hostinger untuk subdomain ini."
+            ]
+        }
+    if any(k in err for k in ["http 520", "http 521", "http 522", "http 523", "http 524"]):
+        status = re.search(r"http\s+(52\d)", err)
+        code = status.group(1) if status else "52x"
+        return {
+            "title": f"Cloudflare Gateway Error (HTTP {code}) on {host}",
+            "cause": f"Cloudflare tidak dapat menghubungi server Hostinger (Origin Error {code}).",
+            "actions": [
+                "Pastikan IP server di DNS Record Cloudflare benar (145.79.14.222).",
+                "Periksa apakah web server Hostinger aktif melayani koneksi."
+            ]
+        }
     if any(k in err for k in ["http 500", "http 502", "http 503"]):
         status = re.search(r"http\s+(\d+)", err)
         code = status.group(1) if status else "500"
