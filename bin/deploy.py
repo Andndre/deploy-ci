@@ -21,7 +21,8 @@ def relative_path(value):
 
 
 def target_path(value):
-    if not value or not value.strip():
+    value = value.strip().lstrip("\ufeff").strip()
+    if not value:
         raise ValueError("HOSTINGER_TARGET_DIR secret is empty or not set")
     value = value.strip().strip("'\"").rstrip("/")
     path = PurePosixPath(value)
@@ -65,10 +66,10 @@ class Deployment:
     def __init__(self, config, environment=None):
         self.config = config
         self.env = os.environ if environment is None else environment
-        self.target = target_path(self.env.get("HOSTINGER_TARGET_DIR", ""))
-        host = self.env.get("HOSTINGER_SSH_HOST", "").strip()
-        user = self.env.get("HOSTINGER_SSH_USER", "").strip()
-        port = self.env.get("HOSTINGER_SSH_PORT", "65002").strip()
+        self.target = target_path(self.secret("HOSTINGER_TARGET_DIR"))
+        host = self.secret("HOSTINGER_SSH_HOST").strip()
+        user = self.secret("HOSTINGER_SSH_USER").strip()
+        port = self.secret("HOSTINGER_SSH_PORT", "65002").strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.:-]*", host):
             raise ValueError("Invalid SSH host")
         if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_-]*", user):
@@ -93,12 +94,16 @@ class Deployment:
         if config["keep_releases"] < 2 or config["retention_days"] < 1:
             raise ValueError("Keep at least two releases and one day of assets")
 
+    def secret(self, name, default=""):
+        # Windows PowerShell can prepend a UTF-8 BOM when piping to gh.
+        return self.env.get(name, default).lstrip("\ufeff")
+
     def credentials(self):
         # Host keys are supplied out of band; ssh-keyscan during a deploy cannot
         # establish the server's identity.
         for path, variable in [(self.key, "HOSTINGER_SSH_KEY"),
                                (self.known_hosts, "HOSTINGER_SSH_KNOWN_HOSTS")]:
-            value = self.env.get(variable, "")
+            value = self.secret(variable)
             if not value.strip():
                 raise ValueError(f"Missing secret: {variable}")
             value = value.replace("\r\n", "\n").replace("\r", "\n").rstrip()

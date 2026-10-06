@@ -102,6 +102,30 @@ class DeploymentTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 deploy.Deployment(self.config, self.env | {key: '-oProxyCommand=bad'})
 
+    def test_bom_prefixed_target_keeps_path_validation(self):
+        self.assertEqual(deploy.target_path("\ufeff/home/test/app/"), "/home/test/app")
+        self.assertEqual(deploy.target_path("  \ufeff/home/test/app\n"), "/home/test/app")
+        for path in ("", "/", "/home/test", "/home/test/app/..", "/home//test/app", "relative/app"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                deploy.target_path("\ufeff" + path)
+
+    def test_existing_bom_prefixed_secrets_work_without_changing_key_contents(self):
+        key = "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE-KEY-FOR-TEST\n-----END OPENSSH PRIVATE KEY-----"
+        known_hosts = "example.test ssh-ed25519 FAKE-HOST-KEY"
+        env = self.env | dict(HOSTINGER_SSH_KEY=key, HOSTINGER_SSH_KNOWN_HOSTS=known_hosts)
+        env = {name: "\ufeff" + value if name.startswith('HOSTINGER_') else value
+               for name, value in env.items()}
+        instance = deploy.Deployment(self.config, env)
+        self.assertEqual(instance.target, '/home/test/app')
+        self.assertEqual(instance.destination, 'test@example.test')
+        self.assertEqual(instance.ssh[instance.ssh.index('-p') + 1], '65002')
+        instance.credentials()
+        self.assertEqual(instance.key.read_bytes(), (key + "\n").encode('utf-8'))
+        self.assertEqual(instance.known_hosts.read_bytes(), (known_hosts + "\n").encode('utf-8'))
+        for name in ('HOSTINGER_SSH_HOST', 'HOSTINGER_SSH_USER'):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                deploy.Deployment(self.config, env | {name: '\ufeff-oProxyCommand=bad'})
+
     def test_rsync_preserves_immutable_directory_and_persistent_data(self):
         instance = deploy.Deployment(self.config, self.env)
         with patch.object(deploy.subprocess, 'run') as run:

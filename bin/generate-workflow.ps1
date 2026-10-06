@@ -430,9 +430,16 @@ if ($uploadSecrets) {
         HOSTINGER_SSH_KNOWN_HOSTS = $knownHostsContent.Trim()
         HOSTINGER_SSH_KEY = (Get-Content -LiteralPath $SshKeyPath -Raw).Trim()
     }
-    foreach ($name in $secrets.Keys) {
-        $secrets[$name] | & gh secret set $name
-        if ($LASTEXITCODE -ne 0) { throw "GitHub secret setup failed for $name (exit $LASTEXITCODE). Some earlier secrets may already have been set." }
+    $previousGlobalOutputEncoding = $global:OutputEncoding
+    try {
+        # PowerShell 5.1 native pipelines read the global encoding from child scripts.
+        $global:OutputEncoding = $utf8
+        foreach ($name in $secrets.Keys) {
+            $secrets[$name].TrimStart([char]0xFEFF) | & gh secret set $name
+            if ($LASTEXITCODE -ne 0) { throw "GitHub secret setup failed for $name (exit $LASTEXITCODE). Some earlier secrets may already have been set." }
+        }
+    } finally {
+        $global:OutputEncoding = $previousGlobalOutputEncoding
     }
     Write-Host 'All six SSH secrets configured successfully.' -ForegroundColor Green
 }

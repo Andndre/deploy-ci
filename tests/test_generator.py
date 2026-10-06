@@ -3,7 +3,9 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -55,7 +57,7 @@ class GeneratorTests(unittest.TestCase):
                    '-DeployUrl', 'https://example.test/']
         if not secrets:
             command.append('-SkipSecrets')
-        return subprocess.run(command + list(args), cwd=self.root, text=True, capture_output=True,
+        return subprocess.run(command + list(args), cwd=self.root, encoding="utf-8", errors="replace", capture_output=True,
                               timeout=60)
 
     def workflow(self):
@@ -170,6 +172,60 @@ class GeneratorTests(unittest.TestCase):
         self.assertIn('FAKE-KEY-FOR-TEST-ONLY', last['stdin'])
         self.assertNotIn('FAKE-KEY-FOR-TEST-ONLY', result.stdout + result.stderr)
         self.assertNotIn('All six SSH secrets configured successfully', result.stdout)
+
+    def test_native_secret_stdin_has_no_bom_even_when_parent_encoding_has_one(self):
+        key = self.root / 'fake-private-key'
+        key.write_text('FAKE-KEY-\u00e9', encoding='utf-8-sig')
+        known = self.root / 'known_hosts'
+        known.write_text('example.test ssh-ed25519 FAKE-HOST-KEY', encoding='utf-8-sig')
+        log = self.root / 'native-secret-log.jsonl'
+        encoding_log = self.root / 'restored-encoding.txt'
+        receiver = self.root / 'record-native-secret.py'
+        wrapper = self.root / 'native-wrapper.ps1'
+        quoted = lambda path: str(path).replace("'", "''")
+        native_tools = self.root / 'native-tools'
+        native_tools.mkdir()
+        native_gh = native_tools / ('gh.cmd' if os.name == 'nt' else 'gh')
+        if os.name == 'nt':
+            native_gh.write_text(f'@echo off\n"{sys.executable}" "{receiver}" %*\n', newline='\r\n')
+        else:
+            native_gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(receiver))} "$@"\n')
+            native_gh.chmod(0o700)
+        for fail_name in ('', 'HOSTINGER_SSH_KEY'):
+            with self.subTest(fail_name=fail_name):
+                log.unlink(missing_ok=True)
+                receiver.write_text(
+                    "import json, sys\n"
+                    "from pathlib import Path\n"
+                    "data = sys.stdin.buffer.read()\n"
+                    "entry = {'args': sys.argv[1:], 'stdin': data.decode('utf-8'), 'bom': data.startswith(bytes.fromhex('efbbbf'))}\n"
+                    f"with Path({str(log)!r}).open('a', encoding='utf-8') as stream: stream.write(json.dumps(entry) + '\\n')\n"
+                    f"sys.exit(9 if sys.argv[-1] == {fail_name!r} else 0)\n",
+                    encoding='utf-8')
+                wrapper.write_text(
+                    "$global:OutputEncoding = [Text.Encoding]::UTF8\n"
+                    "[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false\n"
+                    f"$env:PATH = '{quoted(native_tools)}' + [IO.Path]::PathSeparator + $env:PATH\n"
+                    "try {\n"
+                    f"  & '{quoted(ROOT / 'bin/deploy-ci.ps1')}' @args\n"
+                    "} finally {\n"
+                    f"  [IO.File]::WriteAllText('{quoted(encoding_log)}', [Convert]::ToBase64String($OutputEncoding.GetPreamble()))\n"
+                    "}\n", encoding='utf-8')
+                result = self.generate('-WithoutTests', '-Force', '-SshHost', 'example.test', '-SshUser', 'test',
+                                       '-SshKeyPath', str(key), '-SshKnownHostsPath', str(known),
+                                       secrets=True, wrapper=wrapper)
+                if fail_name:
+                    self.assertNotEqual(result.returncode, 0)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                entries = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                self.assertEqual(len(entries), 6)
+                self.assertTrue(all(not entry['bom'] for entry in entries))
+                target = next(entry for entry in entries if entry['args'][-1] == 'HOSTINGER_TARGET_DIR')
+                self.assertEqual(target['stdin'].strip(), '/home/test/app')
+                self.assertEqual(entries[-1]['stdin'].strip(), 'FAKE-KEY-\u00e9')
+                self.assertEqual(encoding_log.read_text(), '77u/')
+                self.assertNotIn('FAKE-KEY-', result.stdout + result.stderr)
 
     def test_known_hosts_isolates_host_entry_and_protects_other_servers(self):
         key = self.root / 'fake-private-key'
