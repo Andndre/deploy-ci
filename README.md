@@ -69,6 +69,8 @@ Deploying modern Laravel applications (Vite, Inertia, Pest, SQLite/MySQL) to sha
 * **Serialized deployments:** One deployment job per named environment, without canceling an active transfer. This applies within one GitHub repository; separate repositories targeting the same directory need shared coordination. [GitHub concurrency documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 * **Reviewable generation:** `-DryRun` leaves files, cache, Git index and secrets untouched. Existing generated files show a diff; noninteractive replacement requires `-Force`. `-NodeVersion` overrides detection in both pipeline modes.
 * **Stage results:** The workflow summary separates transfer/optimization, public HTTP verification and cleanup. An HTTP failure keeps the workflow red but does not imply that uploaded files were rolled back or never published.
+* **One frontend build per run:** The quality job (or lean build job) builds the checked-out commit, validates the complete output, then uploads an artifact. Deployment restores that exact run/commit artifact and checks its SHA-256 before SSH; it does not install frontend dependencies or rebuild. Laravel production dependencies still use `composer install --no-dev`.
+* **Download caches and timings:** npm/pnpm/Yarn use `setup-node` download caches; Bun and Composer use download-directory caches. Keys include OS, runtime and lockfile inputs. Frozen installs always run. `HOSTINGER_TIMING` records install/cache-hit, build, artifact restore, remote preparation, bounded permission checks, transfers, migrations, caches and HTTP verification in job summaries and JSONL artifacts (14 days). Remote totals include their nested stages; SSH overhead also includes script transport and uninstrumented work.
 
 ---
 
@@ -99,7 +101,7 @@ deploy-ci -Profile sveltekit-static -NonInteractive -SkipSecrets `
   -DeployUrl https://example.com
 ```
 
-Commit `.github/hostinger/` alongside `.github/workflows/deploy.yml`; it contains two Python helpers, one Bash script and the profile JSON. The generated workflow executes these reviewable, versioned files. Reinstall the CLI to get its new helper files. Review the displayed diff before replacing an existing workflow with `-Force`.
+Commit `.github/hostinger/` alongside `.github/workflows/deploy.yml`; it contains four Python helpers, one Bash script and the profile JSON. The generated workflow executes these reviewable, versioned files. Reinstall the CLI to get its new helper files. Review the displayed diff before replacing an existing workflow with `-Force`. Laravel generation requires committed `composer.lock`; frontend artifacts and timing outputs are added to `.gitignore`.
 
 If upgrading from `setup-hostinger-ci`, uninstall the previous CLI before running the new installer, then use `deploy-ci`. The installer now uses `~/.deploy-ci/bin`. To remove the previous installation, run its original uninstaller from the commit before the rename:
 
@@ -115,11 +117,13 @@ For the first production deployment, prepare the server directory, production `.
 
 Before uploading, the remote script checks required commands, target/parent access, the Laravel production `.env` and configured PHP CLI version, immutable collisions and the retention budget. It stops with a stage-specific message when a requirement is missing. This checks current capabilities, not future provider changes or every possible application/runtime setting.
 
+Laravel permission checks require PHP POSIX identity support and a PHP web worker running as the SSH user. The default `-PhpWebUser auto` checks visible worker processes. If the hosting jail hides workers, audit the vhost PHP user and pass `-PhpWebUser <audited-user>` explicitly; a different-user/shared-group setup needs a separate audited policy. Existing runtime roots are checked and probed without descending into uploads. Ownership/access failures stop before maintenance; no recursive chmod/chown is attempted. Rsync normalizes transferred directories to 755 and regular files to 644, retaining executable files as 755. These checks use command substitution and work without `/dev/fd`.
+
 Automatic migrations are **off by default**. `-IncludeMigration` explicitly enables `php artisan migrate --force`. The tool does not validate migration safety, back up the database, undo partial schema changes, or prove compatibility with concurrent requests. Use production-reviewed migrations and an independent recovery plan; a failed migration needs operator investigation.
 
 In-place PHP/vendor updates can expose mixed application versions during publication. To mitigate race conditions, `-MaintenanceMode` enables graceful Laravel maintenance mode (`php artisan down --retry=15` and `php artisan up`) around application transfer. Retained assets and delayed rsync updates reduce asset failures but do not make the application atomic or reset server-managed OPcache. Applications requiring reliable rollback or uninterrupted releases need a separately validated release-directory/runtime design. Do not assume symlink switching or OPcache restart permissions exist on every shared hosting account.
 
-Configure these repository or environment secrets: `HOSTINGER_SSH_HOST`, `HOSTINGER_SSH_USER`, `HOSTINGER_SSH_PORT`, `HOSTINGER_TARGET_DIR`, `HOSTINGER_SSH_KEY` and **`HOSTINGER_SSH_KNOWN_HOSTS`**. The wizard automatically extracts only the host-specific key entry for Hostinger rather than leaking your entire `known_hosts` file. With automatic secret setup, pass `-SshKnownHostsPath` and `-SshKeyPath`; values are sent through stdin as UTF-8 without a BOM and each `gh` exit code is checked. The wizard restores the caller's output encoding on success or failure. Runner helpers also remove a leading BOM from existing SSH secrets before validating or writing them. Pass `-Preflight` to run a live pre-flight SSH and remote environment verification before writing secrets or generating files. [GitHub CLI secret input documentation](https://cli.github.com/manual/gh_secret_set).
+Configure these repository or environment secrets: `HOSTINGER_SSH_HOST`, `HOSTINGER_SSH_USER`, `HOSTINGER_SSH_PORT`, `HOSTINGER_TARGET_DIR`, `HOSTINGER_SSH_KEY` and **`HOSTINGER_SSH_KNOWN_HOSTS`**. The wizard automatically extracts only the host-specific key entry for Hostinger rather than leaking your entire `known_hosts` file. With automatic secret setup, pass `-SshKnownHostsPath` and `-SshKeyPath`; values are sent through stdin as UTF-8 without a BOM and each `gh` exit code is checked. The wizard uses an explicit UTF-8 stdin stream for the native CLI, runs it from the active project directory, and preserves the caller's encoding on success or failure. Runner helpers also remove a leading BOM from existing SSH secrets before validating or writing them. Pass `-Preflight` to run a live pre-flight SSH and remote environment verification before writing secrets or generating files. [GitHub CLI secret input documentation](https://cli.github.com/manual/gh_secret_set).
 
 Old-browser asset requests are supported within the retention policy, not indefinitely. Keeping previous chunks addresses [Vite dynamic-import failures after deployments](https://vite.dev/guide/build#load-error-handling). A `403` or `429` is recorded and fails verification; it could reflect application rules, rate limiting or an intermediary challenge. The response does not establish the cause, and an HTTP check samples public responses rather than proving complete application health. Cleanup protects the current publication and the last verified assets when verification fails; failures during transfer/optimization can still leave inventories and uploads awaiting a later deployment. Budget exhaustion stops new uploads rather than automatically sacrificing retained assets.
 
@@ -132,7 +136,7 @@ Old-browser asset requests are supported within the retention policy, not indefi
 uv run python -m unittest discover -s tests -v
 ```
 
-Tests cover generator immutability and replacement, both workflow modes, package managers, failed secret commands, remote collision/path/retention behavior, and HTTP failures. Linux CI additionally runs an actual rsync transfer across two releases. Set `POWERSHELL_EXE` to run the generator tests with Windows PowerShell 5.1; Windows remote-script tests use Git Bash.
+Tests cover generator immutability and replacement, both workflow modes, package managers/cache scopes, artifact integrity and output profiles, failed secret commands, remote ownership/permission/maintenance failures, collision/path/retention behavior, and HTTP failures. Linux tests run actual rsync transfers and a jail without `/dev/fd`. CI also validates generated workflows with actionlint and the remote script with ShellCheck. Set `POWERSHELL_EXE` to run the generator tests with Windows PowerShell 5.1; Windows remote-script tests use Git Bash.
 
 ---
 
@@ -146,7 +150,7 @@ flowchart TD
         C --> D["Setup Node.js 22 & npm ci"]
         
         subgraph verifyJob ["Job 1: verify (Quality Gate)"]
-            E["Generate Wayfinder/Frontend Types"]
+            E["Build Frontend Once / Generate Types"]
             F["Laravel Pint Code Style"]
             G["ESLint Frontend Check"]
             H["Automated Tests: Pest / PHPUnit"]
@@ -156,8 +160,8 @@ flowchart TD
         D --> verifyJob
         
         subgraph deployJob ["Job 2: deploy (Push to Main Only)"]
-            I["composer install --no-dev"]
-            J["npm run build: Vite Production"]
+            I["Restore Verified Build Artifact / SHA-256"]
+            J["composer install --no-dev"]
             K["Rsync over SSH Port 65002<br/>Exclude storage & SQLite"]
             I --> J --> K
         end

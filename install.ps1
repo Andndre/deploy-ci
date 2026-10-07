@@ -35,7 +35,9 @@ $files = @(
     "generate-workflow.ps1",
     "deploy.py",
     "remote-deploy.sh",
-    "check-deploy.py"
+    "check-deploy.py",
+    "build_artifact.py",
+    "measure.py"
 )
 
 foreach ($file in $files) {

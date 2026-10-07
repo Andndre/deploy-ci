@@ -11,6 +11,13 @@ check = load('check_deploy', 'check-deploy.py')
 
 
 class HTTPTests(unittest.TestCase):
+    def test_server_error_permission_diagnosis_requires_audit_without_recursive_chmod(self):
+        diagnosis = check.diagnose_error('https://example.test', 'HTTP 500')
+        actions = '\n'.join(diagnosis['actions'])
+        self.assertIn('ownership', actions)
+        self.assertIn('setelah audit', actions)
+        self.assertNotIn('chmod -R', actions)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=SCRATCH)
         self.addCleanup(self.temp.cleanup)

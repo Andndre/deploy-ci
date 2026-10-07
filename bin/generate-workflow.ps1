@@ -4,6 +4,51 @@ function ConvertTo-YamlString {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
+function Send-GitHubSecret {
+    param(
+        [ValidatePattern('^HOSTINGER_[A-Z_]+$')]
+        [string]$Name,
+        [string]$Value
+    )
+    $command = Get-Command gh -ErrorAction Stop
+    if ($command.CommandType -ne 'Application') {
+        $Value | & gh secret set $Name
+        $code = $LASTEXITCODE
+    } else {
+        $encoding = New-Object Text.UTF8Encoding $false
+        $previousInputEncoding = [Console]::InputEncoding
+        $process = New-Object Diagnostics.Process
+        try {
+            $process.StartInfo.FileName = $command.Source
+            $process.StartInfo.Arguments = "secret set $Name"
+            if ([IO.Path]::GetExtension($command.Source) -in @('.cmd', '.bat')) {
+                $process.StartInfo.FileName = $env:ComSpec
+                $process.StartInfo.Arguments = '/d /s /c ""' + $command.Source + '" secret set ' + $Name + '"'
+            }
+            $process.StartInfo.WorkingDirectory = (Get-Location).Path
+            $process.StartInfo.UseShellExecute = $false
+            $process.StartInfo.CreateNoWindow = $true
+            $process.StartInfo.RedirectStandardInput = $true
+            if ($process.StartInfo.PSObject.Properties['StandardInputEncoding']) {
+                $process.StartInfo.StandardInputEncoding = $encoding
+            }
+            # .NET Framework uses Console.InputEncoding for redirected stdin.
+            [Console]::InputEncoding = $encoding
+            if (-not $process.Start()) { throw 'Unable to start GitHub CLI.' }
+            $process.StandardInput.WriteLine($Value)
+            $process.StandardInput.Close()
+            $process.WaitForExit()
+            $code = $process.ExitCode
+        } finally {
+            $process.Dispose()
+            [Console]::InputEncoding = $previousInputEncoding
+        }
+    }
+    if ($code -ne 0) {
+        throw "GitHub secret setup failed for $Name (exit $code). Some earlier secrets may already have been set."
+    }
+}
+
 function Get-MatchingKnownHosts {
     param(
         [string]$Path,
@@ -147,7 +192,7 @@ for ($i = 0; $i -lt $ImmutableDirs.Count; $i++) {
     }
 }
 $ignoreOutput = if ($Profile -eq 'laravel-vite') { 'public/build' } else { $OutputDir }
-$protected = @('.env*', '.git', '.github', 'node_modules', '.hostinger-ci', 'deploy-diagnostics')
+$protected = @('.env*', '.git', '.github', 'node_modules', '.hostinger-ci', 'deploy-diagnostics', 'frontend-artifact')
 if ($Profile -eq 'laravel-vite') { $protected += @('storage', 'database/*.sqlite*', 'tests', 'public/storage') }
 else { $protected += @('uploads', '.well-known') }
 foreach ($path in $ProtectedPaths) {
@@ -185,29 +230,55 @@ if (-not $BuildCommand) {
 if ($BuildCommand -match '[\r\n]') { throw 'BuildCommand must be a single line.' }
 $lintCmd = $lintCmd -replace '^npm ', "$PackageManager "
 
-$phpSetup = ''
-$composerInstall = ''
-if ($Profile -eq 'laravel-vite') {
-    $phpSetup = @"
+if ($Profile -eq 'laravel-vite' -and -not (Test-Path -LiteralPath 'composer.lock' -PathType Leaf)) {
+    throw 'Commit composer.lock before generating a Laravel deployment.'
+}
+if ($PhpWebUser -notmatch '^[a-zA-Z0-9_][a-zA-Z0-9_-]*$') { throw 'Invalid PhpWebUser.' }
+
+function Get-ComposerSteps {
+    param([bool]$Production)
+    if ($Profile -ne 'laravel-vite') { return '' }
+    $template = @'
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: $(ConvertTo-YamlString $PhpVersion)
+          php-version: @@php@@
+          tools: composer:v2
           extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, pdo_sqlite, bcmath, curl, zip, gd, exif
           coverage: none
 
-"@
-    $composerInstall = "          composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction`n"
+      - name: Locate Composer download cache
+        id: composer-path
+        run: echo "path=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer downloads
+        id: composer-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-path.outputs.path }}
+          key: composer-${{ runner.os }}-${{ runner.arch }}-php@@raw_php@@-composer2-${{ hashFiles('composer.lock') }}
+
+      - name: Install @@label@@PHP dependencies
+        run: python3 .github/hostinger/measure.py --cache-hit '${{ steps.composer-cache.outputs.cache-hit }}' @@stage@@ -- composer install @@no_dev@@--prefer-dist --optimize-autoloader --no-interaction
+
+'@
+    $label = if ($Production) { 'production ' } else { '' }
+    $stage = if ($Production) { 'composer-install-production' } else { 'composer-install' }
+    $noDev = if ($Production) { '--no-dev ' } else { '' }
+    return $template.Replace('@@php@@', (ConvertTo-YamlString $PhpVersion)).Replace('@@raw_php@@', $PhpVersion).
+        Replace('@@label@@', $label).Replace('@@stage@@', $stage).Replace('@@no_dev@@', $noDev) + "`n"
 }
-$nodeSetup = @"
+
+$nodeBase = @"
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: $(ConvertTo-YamlString $NodeVersion)
 
 "@
+$managerSetup = ''
 if ($PackageManager -in @('pnpm', 'yarn')) {
-    $nodeSetup += @"
+    $managerSetup = @"
       - name: Activate package manager
         run: |
           if ! command -v corepack >/dev/null; then npm install --global corepack; fi
@@ -216,7 +287,7 @@ if ($PackageManager -in @('pnpm', 'yarn')) {
 
 "@
 } elseif ($PackageManager -eq 'bun') {
-    $nodeSetup += @"
+    $managerSetup = @"
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -224,22 +295,74 @@ if ($PackageManager -in @('pnpm', 'yarn')) {
 
 "@
 } elseif ($managerVersion) {
-    $nodeSetup += "      - name: Activate npm`n        run: npm install --global npm@$managerVersion`n`n"
+    $managerSetup = "      - name: Activate npm`n        run: npm install --global npm@$managerVersion`n`n"
 }
-
-$buildSteps = @"
-$phpSetup$nodeSetup      - name: Install dependencies and build
+$nodeSetup = ''
+$nodeBootstrapRequired = [bool]$managerSetup -or $NodeVersion -eq 'lts/*'
+if ($nodeBootstrapRequired) { $nodeSetup = $nodeBase + $managerSetup }
+if ($PackageManager -eq 'bun') {
+    $cacheTemplate = @'
+      - name: Configure Bun download cache
         run: |
-$composerInstall          $installCommand
-          $BuildCommand
+          echo "BUN_INSTALL_CACHE_DIR=$RUNNER_TEMP/bun-download-cache" >> "$GITHUB_ENV"
+          printf 'node=%s\nbun=%s\n' "$(node --version)" "$(bun --version)" > .github/hostinger/.node-cache-runtime
 
-"@
-$verifyJob = ''
-$deployNeeds = ''
+      - name: Cache Bun downloads
+        id: node
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/bun-download-cache
+          key: bun-${{ runner.os }}-${{ runner.arch }}-node@@node@@-bun@@manager@@-${{ hashFiles('@@lock@@', '.github/hostinger/.node-cache-runtime') }}
+
+'@
+    $nodeSetup += $cacheTemplate.Replace('@@node@@', $NodeVersion).Replace('@@manager@@', $managerVersion).Replace('@@lock@@', $lockfile) + "`n"
+} else {
+    $cacheTemplate = @'
+      - name: Scope frontend download cache to runtime
+        run: printf 'node=%s\nmanager=%s\n' @@node_identity@@ '@@manager@@' > .github/hostinger/.node-cache-runtime
+
+      - name: Setup Node.js@@label@@
+        id: node
+        uses: actions/setup-node@v4
+        with:
+          node-version: @@yaml_node@@
+          cache: @@package_manager@@
+          cache-dependency-path: |
+            @@lock@@
+            .github/hostinger/.node-cache-runtime
+
+'@
+    $cacheLabel = if ($nodeBootstrapRequired) { ' download cache' } else { '' }
+    $nodeIdentity = if ($nodeBootstrapRequired) { '"$(node --version)"' } else { "'$NodeVersion'" }
+    $nodeSetup += $cacheTemplate.Replace('@@node_identity@@', $nodeIdentity).Replace('@@manager@@', "$PackageManager@$managerVersion").
+        Replace('@@label@@', $cacheLabel).Replace('@@yaml_node@@', (ConvertTo-YamlString $NodeVersion)).
+        Replace('@@package_manager@@', (ConvertTo-YamlString $PackageManager)).Replace('@@lock@@', $lockfile) + "`n"
+}
+$installTemplate = @'
+      - name: Install frontend dependencies
+        run: python3 .github/hostinger/measure.py --cache-hit '${{ steps.node.outputs.cache-hit }}' @@manager@@-install -- @@install@@
+
+'@
+$buildSteps = (Get-ComposerSteps -Production (-not $useGated)) + $nodeSetup +
+    $installTemplate.Replace('@@manager@@', $PackageManager).Replace('@@install@@', $installCommand) + "`n"
+if ($Profile -eq 'laravel-vite') {
+    $buildSteps += "      - name: Prepare build environment`n        run: |`n          cp .env.example .env`n          php artisan key:generate --no-interaction`n`n"
+}
+# Use Bash explicitly so a custom build command keeps its existing shell syntax.
+$frontendBuild = @'
+      - name: Build frontend once
+        env:
+          FRONTEND_BUILD_COMMAND: @@command@@
+        run: python3 .github/hostinger/measure.py frontend-build -- bash -e -o pipefail -c "$FRONTEND_BUILD_COMMAND"
+
+'@
+$buildSteps += $frontendBuild.Replace('@@command@@', (ConvertTo-YamlString $BuildCommand)) + "`n"
+$buildSteps += "      - name: Check deployment shell`n        run: |`n          bash -n .github/hostinger/remote-deploy.sh`n          shellcheck .github/hostinger/remote-deploy.sh`n`n"
+$qualitySteps = ''
 if ($useGated) {
-    $qualitySteps = ''
     if ($Profile -eq 'laravel-vite' -and $hasPint) { $qualitySteps += "      - name: Check PHP style`n        run: vendor/bin/pint --test`n`n" }
     if ($hasEslint) { $qualitySteps += "      - name: Check frontend lint`n        run: $lintCmd`n`n" }
+    if ($pkgJson.scripts.'types:check') { $qualitySteps += "      - name: Check frontend types`n        run: $PackageManager run types:check`n`n" }
     if ($Profile -eq 'laravel-vite' -and ($hasPest -or $hasPhpUnit -or $WithTests)) {
         $testCommand = if ($hasPest) { 'vendor/bin/pest' } else { 'php artisan test' }
         $qualitySteps += "      - name: Run PHP tests`n        run: $testCommand`n`n"
@@ -247,19 +370,60 @@ if ($useGated) {
         $testScript = if ($pkgJson.scripts.'test:ci') { 'test:ci' } elseif ($pkgJson.scripts.test) { 'test' } else { '' }
         if ($testScript) { $qualitySteps += "      - name: Run frontend tests`n        run: $PackageManager run $testScript`n`n" }
     }
-    $verifyBuild = $buildSteps.Replace('composer install --no-dev ', 'composer install ')
-    if ($Profile -eq 'laravel-vite') {
-        $verifyBuild = $verifyBuild.Replace("          $BuildCommand", "          cp .env.example .env`n          php artisan key:generate`n          $BuildCommand")
-    }
-    $verifyJob = @"
-  verify:
+}
+$buildJobName = if ($useGated) { 'verify' } else { 'build' }
+$buildJobTemplate = @'
+  @@job@@:
     runs-on: ubuntu-latest
+    env:
+      HOSTINGER_TIMING_JOB: @@job@@
+    outputs:
+      artifact_id: ${{ steps.artifact.outputs.artifact-id }}
+      build_sha256: ${{ steps.seal.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v4
-$verifyBuild$qualitySteps
-"@
-    $deployNeeds = "    needs: [verify]`n"
-}
+        with:
+          ref: ${{ github.sha }}
+@@build_steps@@@@quality@@      - name: Seal verified frontend build
+        id: seal
+        run: python3 .github/hostinger/build_artifact.py seal
+
+      - name: Save verified frontend build
+        id: artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-${{ github.run_id }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: frontend-artifact/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Save build and verification timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: @@job@@-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deploy-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14
+
+'@
+$verifyJob = $buildJobTemplate.Replace('@@job@@', $buildJobName).Replace('@@build_steps@@', $buildSteps).Replace('@@quality@@', $qualitySteps) + "`n"
+$restoreTemplate = @'
+      - name: Download verified frontend build
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.@@job@@.outputs.artifact_id }}
+          path: frontend-artifact/
+          merge-multiple: true
+
+      - name: Validate and restore verified build
+        env:
+          EXPECTED_BUILD_SHA256: ${{ needs.@@job@@.outputs.build_sha256 }}
+        run: python3 .github/hostinger/measure.py artifact-restore -- python3 .github/hostinger/build_artifact.py restore --sha256 "$EXPECTED_BUILD_SHA256"
+
+'@
+$deployBuild = $restoreTemplate.Replace('@@job@@', $buildJobName) + "`n" + (Get-ComposerSteps -Production $true)
+$deployNeeds = "    needs: [$buildJobName]`n"
 
 $workflowTemplate = @'
 name: Deploy CI
@@ -284,6 +448,7 @@ jobs:
       group: hostinger-@@raw_environment@@
       cancel-in-progress: false
     env:
+      HOSTINGER_TIMING_JOB: deploy
       HOSTINGER_SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
       HOSTINGER_SSH_USER: ${{ secrets.HOSTINGER_SSH_USER }}
       HOSTINGER_SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT }}
@@ -292,13 +457,15 @@ jobs:
       HOSTINGER_TARGET_DIR: ${{ secrets.HOSTINGER_TARGET_DIR }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
 @@build@@      - name: Upload immutable assets, then publish application
         id: transfer
         run: python3 .github/hostinger/deploy.py transfer
 
       - name: Verify deployed HTML and JS/CSS
         id: verify
-        run: python3 .github/hostinger/check-deploy.py
+        run: python3 .github/hostinger/measure.py http-verification -- python3 .github/hostinger/check-deploy.py
 
       - name: Clean expired deployment assets
         id: cleanup
@@ -329,7 +496,8 @@ jobs:
 $prTrigger = if ($useGated) { "  pull_request:`n    branches: [$(ConvertTo-YamlString $Branch)]`n" } else { '' }
 $workflowContent = $workflowTemplate.Replace('@@branch@@', (ConvertTo-YamlString $Branch)).Replace('@@pr@@', $prTrigger).
     Replace('@@verify@@', $verifyJob).Replace('@@needs@@', $deployNeeds).Replace('@@raw_branch@@', $Branch).
-    Replace('@@environment@@', (ConvertTo-YamlString $Environment)).Replace('@@raw_environment@@', $Environment).Replace('@@build@@', $buildSteps)
+    Replace('@@environment@@', (ConvertTo-YamlString $Environment)).Replace('@@raw_environment@@', $Environment).
+    Replace('@@build@@', $deployBuild)
 
 $profileConfig = [ordered]@{
     profile = $Profile
@@ -344,6 +512,8 @@ $profileConfig = [ordered]@{
     php_version = $PhpVersion
     migrate = [bool]$IncludeMigration
     maintenance = [bool]$MaintenanceMode
+    require_build_artifact = $true
+    php_web_user = $PhpWebUser
     deploy_url = $DeployUrl
     page_contains = $PageContains
     max_assets = 6
@@ -351,7 +521,7 @@ $profileConfig = [ordered]@{
     build_command = $BuildCommand
 }
 $files = [ordered]@{ '.github/workflows/deploy.yml' = $workflowContent; '.github/hostinger/profile.json' = ($profileConfig | ConvertTo-Json -Depth 5) }
-foreach ($helper in @('deploy.py', 'remote-deploy.sh', 'check-deploy.py')) {
+foreach ($helper in @('deploy.py', 'remote-deploy.sh', 'check-deploy.py', 'build_artifact.py', 'measure.py')) {
     $files[".github/hostinger/$helper"] = Get-Content -LiteralPath (Join-Path $PSScriptRoot $helper) -Raw
 }
 
@@ -402,10 +572,13 @@ foreach ($path in $files.Keys) {
 }
 $gitignoreFile = Join-Path (Get-Location).Path '.gitignore'
 $gitignoreContent = if (Test-Path $gitignoreFile) { [IO.File]::ReadAllText($gitignoreFile) } else { '' }
-$ignorePattern = '(^|\r?\n)/?' + [regex]::Escape($ignoreOutput) + '/?($|\r?\n)'
-if ($gitignoreContent -notmatch $ignorePattern) {
-    [IO.File]::WriteAllText($gitignoreFile, $gitignoreContent.TrimEnd() + "`n/$ignoreOutput`n", $utf8)
+foreach ($ignored in @($ignoreOutput, 'frontend-artifact', 'deploy-diagnostics', '.github/hostinger/.node-cache-runtime')) {
+    $ignorePattern = '(^|\r?\n)/?' + [regex]::Escape($ignored) + '/?($|\r?\n)'
+    if ($gitignoreContent -notmatch $ignorePattern) {
+        $gitignoreContent = $gitignoreContent.TrimEnd() + "`n/$ignored`n"
+    }
 }
+[IO.File]::WriteAllText($gitignoreFile, $gitignoreContent, $utf8)
 $trackedOutput = @(git ls-files -- $ignoreOutput)
 if ($LASTEXITCODE -ne 0) { throw 'Failed to inspect the Git index.' }
 if ($trackedOutput.Count -gt 0) {
@@ -430,16 +603,8 @@ if ($uploadSecrets) {
         HOSTINGER_SSH_KNOWN_HOSTS = $knownHostsContent.Trim()
         HOSTINGER_SSH_KEY = (Get-Content -LiteralPath $SshKeyPath -Raw).Trim()
     }
-    $previousGlobalOutputEncoding = $global:OutputEncoding
-    try {
-        # PowerShell 5.1 native pipelines read the global encoding from child scripts.
-        $global:OutputEncoding = $utf8
-        foreach ($name in $secrets.Keys) {
-            $secrets[$name].TrimStart([char]0xFEFF) | & gh secret set $name
-            if ($LASTEXITCODE -ne 0) { throw "GitHub secret setup failed for $name (exit $LASTEXITCODE). Some earlier secrets may already have been set." }
-        }
-    } finally {
-        $global:OutputEncoding = $previousGlobalOutputEncoding
+    foreach ($name in $secrets.Keys) {
+        Send-GitHubSecret -Name $name -Value $secrets[$name].TrimStart([char]0xFEFF)
     }
     Write-Host 'All six SSH secrets configured successfully.' -ForegroundColor Green
 }

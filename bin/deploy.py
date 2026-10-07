@@ -8,7 +8,10 @@ import re
 import shlex
 import subprocess
 import tempfile
+import time
 import uuid
+from build_artifact import verify_build
+from measure import record, timed
 
 
 def relative_path(value):
@@ -123,20 +126,44 @@ class Deployment:
                      str(self.config.get("max_retained_bytes", 512 * 1024 * 1024)), str(incoming_bytes),
                      self.config.get("php_version", ""),
                      str(self.env.get("HOSTINGER_HTTP_VERIFIED", "false")).lower(),
-                     str(self.config.get("maintenance", False)).lower()]
-        subprocess.run(self.ssh + [self.destination, "bash -s -- " + shlex.join(arguments)],
-                       input=script, text=True, check=True)
+                     str(self.config.get("maintenance", False)).lower(),
+                     self.config.get("php_web_user", "auto")]
+        with timed("remote-" + phase):
+            started = time.monotonic()
+            remote_seconds = 0
+            with subprocess.Popen(self.ssh + [self.destination, "bash -s -- " + shlex.join(arguments)],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True) as process:
+                process.stdin.write(script)
+                process.stdin.close()
+                for line in process.stdout:
+                    if line.startswith("HOSTINGER_TIMING "):
+                        metric = json.loads(line.removeprefix("HOSTINGER_TIMING "))
+                        remote_seconds += metric["seconds"]
+                        record(**metric)
+                    else:
+                        print(line, end="", flush=True)
+                code = process.wait()
+                record("ssh-overhead-" + phase, max(0, time.monotonic() - started - remote_seconds),
+                       "failure" if code else "success", note="SSH connection, script transport and uninstrumented overhead")
+                if code:
+                    raise subprocess.CalledProcessError(code, process.args)
 
     def rsync(self, source, target, excludes=(), delete=False):
-        command = ["rsync", "-rlz", "--checksum", "--delay-updates", "--safe-links", "--protect-args",
+        command = ["rsync", "-rlzp", "--chmod=Du=rwx,Dgo=rx,Fu=rwX,Fgo=rX",
+                   "--checksum", "--delay-updates", "--safe-links", "--protect-args",
                    "-e", shlex.join(self.ssh)]
         if delete:
             command.append("--delete-delay")
         command.extend(f"--exclude=/{value}" for value in excludes)
         command.extend([str(source) + "/", self.rsync_destination + ":" + target + "/"])
-        subprocess.run(command, check=True)
+        with timed("rsync-assets" if not delete else "rsync-application"):
+            subprocess.run(command, check=True)
 
     def transfer(self):
+        if self.config.get("require_build_artifact", False):
+            with timed("artifact-preflight"):
+                verify_build(self.source, self.env, self.config)
         if not self.source.is_dir():
             raise ValueError("Build output directory does not exist")
         if self.config["profile"] != "laravel-vite" and not any(self.source.rglob("*.html")):
@@ -170,6 +197,8 @@ def main():
     args = parser.parse_args()
     deployment = Deployment(json.loads(Path(args.config).read_text(encoding="utf-8-sig")))
     try:
+        if args.phase == "transfer" and deployment.config.get("require_build_artifact", False):
+            verify_build(deployment.source, deployment.env, deployment.config)
         deployment.credentials()
         getattr(deployment, args.phase)()
     finally:
