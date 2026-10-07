@@ -4,6 +4,51 @@ function ConvertTo-YamlString {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
+function Send-GitHubSecret {
+    param(
+        [ValidatePattern('^HOSTINGER_[A-Z_]+$')]
+        [string]$Name,
+        [string]$Value
+    )
+    $command = Get-Command gh -ErrorAction Stop
+    if ($command.CommandType -ne 'Application') {
+        $Value | & gh secret set $Name
+        $code = $LASTEXITCODE
+    } else {
+        $encoding = New-Object Text.UTF8Encoding $false
+        $previousInputEncoding = [Console]::InputEncoding
+        $process = New-Object Diagnostics.Process
+        try {
+            $process.StartInfo.FileName = $command.Source
+            $process.StartInfo.Arguments = "secret set $Name"
+            if ([IO.Path]::GetExtension($command.Source) -in @('.cmd', '.bat')) {
+                $process.StartInfo.FileName = $env:ComSpec
+                $process.StartInfo.Arguments = '/d /s /c ""' + $command.Source + '" secret set ' + $Name + '"'
+            }
+            $process.StartInfo.WorkingDirectory = (Get-Location).Path
+            $process.StartInfo.UseShellExecute = $false
+            $process.StartInfo.CreateNoWindow = $true
+            $process.StartInfo.RedirectStandardInput = $true
+            if ($process.StartInfo.PSObject.Properties['StandardInputEncoding']) {
+                $process.StartInfo.StandardInputEncoding = $encoding
+            }
+            # .NET Framework uses Console.InputEncoding for redirected stdin.
+            [Console]::InputEncoding = $encoding
+            if (-not $process.Start()) { throw 'Unable to start GitHub CLI.' }
+            $process.StandardInput.WriteLine($Value)
+            $process.StandardInput.Close()
+            $process.WaitForExit()
+            $code = $process.ExitCode
+        } finally {
+            $process.Dispose()
+            [Console]::InputEncoding = $previousInputEncoding
+        }
+    }
+    if ($code -ne 0) {
+        throw "GitHub secret setup failed for $Name (exit $code). Some earlier secrets may already have been set."
+    }
+}
+
 function Get-MatchingKnownHosts {
     param(
         [string]$Path,
@@ -558,19 +603,8 @@ if ($uploadSecrets) {
         HOSTINGER_SSH_KNOWN_HOSTS = $knownHostsContent.Trim()
         HOSTINGER_SSH_KEY = (Get-Content -LiteralPath $SshKeyPath -Raw).Trim()
     }
-    $previousOutputEncoding = $OutputEncoding
-    $previousGlobalOutputEncoding = $global:OutputEncoding
-    try {
-        # Native pipelines can resolve OutputEncoding from different scopes across hosts.
-        $OutputEncoding = $utf8
-        $global:OutputEncoding = $utf8
-        foreach ($name in $secrets.Keys) {
-            $secrets[$name].TrimStart([char]0xFEFF) | & gh secret set $name
-            if ($LASTEXITCODE -ne 0) { throw "GitHub secret setup failed for $name (exit $LASTEXITCODE). Some earlier secrets may already have been set." }
-        }
-    } finally {
-        $OutputEncoding = $previousOutputEncoding
-        $global:OutputEncoding = $previousGlobalOutputEncoding
+    foreach ($name in $secrets.Keys) {
+        Send-GitHubSecret -Name $name -Value $secrets[$name].TrimStart([char]0xFEFF)
     }
     Write-Host 'All six SSH secrets configured successfully.' -ForegroundColor Green
 }

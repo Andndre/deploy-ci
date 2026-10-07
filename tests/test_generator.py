@@ -314,7 +314,7 @@ class GeneratorTests(unittest.TestCase):
                     "import json, sys\n"
                     "from pathlib import Path\n"
                     "data = sys.stdin.buffer.read()\n"
-                    "entry = {'args': sys.argv[1:], 'stdin': data.decode('utf-8'), 'bom': data.startswith(bytes.fromhex('efbbbf'))}\n"
+                    "entry = {'args': sys.argv[1:], 'stdin': data.decode('utf-8'), 'bom': data.startswith(bytes.fromhex('efbbbf')), 'cwd': str(Path.cwd())}\n"
                     f"with Path({str(log)!r}).open('a', encoding='utf-8') as stream: stream.write(json.dumps(entry) + '\\n')\n"
                     f"sys.exit(9 if sys.argv[-1] == {fail_name!r} else 0)\n",
                     encoding='utf-8')
@@ -322,11 +322,13 @@ class GeneratorTests(unittest.TestCase):
                     "$global:OutputEncoding = [Text.Encoding]::UTF8\n"
                     "$script:OutputEncoding = [Text.Encoding]::UTF8\n"
                     "[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false\n"
+                    "[Console]::InputEncoding = [Text.Encoding]::UTF8\n"
                     f"$env:PATH = '{quoted(native_tools)}' + [IO.Path]::PathSeparator + $env:PATH\n"
+                    f"[Environment]::CurrentDirectory = '{quoted(native_tools)}'\n"
                     "try {\n"
                     f"  & '{quoted(ROOT / 'bin/deploy-ci.ps1')}' @args\n"
                     "} finally {\n"
-                    "  $encodingState = @{ local = [Convert]::ToBase64String($OutputEncoding.GetPreamble()); global = [Convert]::ToBase64String($global:OutputEncoding.GetPreamble()) } | ConvertTo-Json -Compress\n"
+                    "  $encodingState = @{ local = [Convert]::ToBase64String($OutputEncoding.GetPreamble()); global = [Convert]::ToBase64String($global:OutputEncoding.GetPreamble()); input = [Convert]::ToBase64String([Console]::InputEncoding.GetPreamble()) } | ConvertTo-Json -Compress\n"
                     f"  [IO.File]::WriteAllText('{quoted(encoding_log)}', $encodingState)\n"
                     "}\n", encoding='utf-8')
                 result = self.generate('-WithoutTests', '-Force', '-SshHost', 'example.test', '-SshUser', 'test',
@@ -339,10 +341,11 @@ class GeneratorTests(unittest.TestCase):
                 entries = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
                 self.assertEqual(len(entries), 6)
                 self.assertTrue(all(not entry['bom'] for entry in entries))
+                self.assertTrue(all(Path(entry['cwd']).resolve() == self.root.resolve() for entry in entries))
                 target = next(entry for entry in entries if entry['args'][-1] == 'HOSTINGER_TARGET_DIR')
                 self.assertEqual(target['stdin'].strip(), '/home/test/app')
                 self.assertEqual(entries[-1]['stdin'].strip(), 'FAKE-KEY-\u00e9')
-                self.assertEqual(json.loads(encoding_log.read_text()), {'local': '77u/', 'global': '77u/'})
+                self.assertEqual(json.loads(encoding_log.read_text()), {'local': '77u/', 'global': '77u/', 'input': '77u/'})
                 self.assertNotIn('FAKE-KEY-', result.stdout + result.stderr)
 
     def test_known_hosts_isolates_host_entry_and_protects_other_servers(self):
