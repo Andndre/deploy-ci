@@ -320,12 +320,14 @@ class GeneratorTests(unittest.TestCase):
                     encoding='utf-8')
                 wrapper.write_text(
                     "$global:OutputEncoding = [Text.Encoding]::UTF8\n"
+                    "$script:OutputEncoding = [Text.Encoding]::UTF8\n"
                     "[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false\n"
                     f"$env:PATH = '{quoted(native_tools)}' + [IO.Path]::PathSeparator + $env:PATH\n"
                     "try {\n"
                     f"  & '{quoted(ROOT / 'bin/deploy-ci.ps1')}' @args\n"
                     "} finally {\n"
-                    f"  [IO.File]::WriteAllText('{quoted(encoding_log)}', [Convert]::ToBase64String($OutputEncoding.GetPreamble()))\n"
+                    "  $encodingState = @{ local = [Convert]::ToBase64String($OutputEncoding.GetPreamble()); global = [Convert]::ToBase64String($global:OutputEncoding.GetPreamble()) } | ConvertTo-Json -Compress\n"
+                    f"  [IO.File]::WriteAllText('{quoted(encoding_log)}', $encodingState)\n"
                     "}\n", encoding='utf-8')
                 result = self.generate('-WithoutTests', '-Force', '-SshHost', 'example.test', '-SshUser', 'test',
                                        '-SshKeyPath', str(key), '-SshKnownHostsPath', str(known),
@@ -340,7 +342,7 @@ class GeneratorTests(unittest.TestCase):
                 target = next(entry for entry in entries if entry['args'][-1] == 'HOSTINGER_TARGET_DIR')
                 self.assertEqual(target['stdin'].strip(), '/home/test/app')
                 self.assertEqual(entries[-1]['stdin'].strip(), 'FAKE-KEY-\u00e9')
-                self.assertEqual(encoding_log.read_text(), '77u/')
+                self.assertEqual(json.loads(encoding_log.read_text()), {'local': '77u/', 'global': '77u/'})
                 self.assertNotIn('FAKE-KEY-', result.stdout + result.stderr)
 
     def test_known_hosts_isolates_host_entry_and_protects_other_servers(self):
