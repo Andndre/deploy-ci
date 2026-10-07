@@ -237,7 +237,7 @@ def diagnose_error(url, error_message):
             "actions": [
                 "Periksa log aplikasi Laravel via SSH: tail -n 50 storage/logs/laravel.log",
                 "Pastikan kredensial database di .env server sudah sesuai dan migrasi telah berjalan.",
-                "Pastikan folder storage dan bootstrap/cache memiliki izin tulis (chmod -R 775 storage)."
+                "Periksa ownership dan akses user PHP pada direktori runtime yang dilaporkan log deploy; koreksi direktori terkait setelah audit tanpa chmod rekursif seluruh storage/upload."
             ]
         }
     if any(k in err for k in ["asset bytes differ", "absent from the current build", "invalid asset mime"]):

@@ -31,6 +31,7 @@ class GeneratorTests(unittest.TestCase):
         (self.root / 'artisan').write_text('<?php')
         (self.root / 'composer.json').write_text(json.dumps({'require': {'php': '^8.3'},
                                                           'require-dev': {'pestphp/pest': '^3.0'}}))
+        (self.root / 'composer.lock').write_text('{}')
         (self.root / '.env.example').write_text('APP_KEY=')
         (self.root / '.nvmrc').write_text('22')
         (self.root / 'public/build/assets').mkdir(parents=True)
@@ -62,7 +63,18 @@ class GeneratorTests(unittest.TestCase):
 
     def workflow(self):
         # BaseLoader avoids YAML 1.1 treating GitHub's "on" as a boolean.
-        return yaml.load((self.root / '.github/workflows/deploy.yml').read_text(encoding='utf-8-sig'), Loader=yaml.BaseLoader)
+        text = (self.root / '.github/workflows/deploy.yml').read_text(encoding='utf-8-sig')
+        workflow = yaml.load(text, Loader=yaml.BaseLoader)
+        profile = json.loads((self.root / '.github/hostinger/profile.json').read_text())
+        generated = SCRATCH / 'generated-workflows'
+        generated.mkdir(exist_ok=True)
+        mode = 'gated' if 'verify' in workflow['jobs'] else 'lean'
+        (generated / f"{profile['profile']}-{profile['package_manager']}-{mode}.yml").write_text(text, encoding='utf-8')
+        actionlint = os.environ.get('ACTIONLINT_EXE') or shutil.which('actionlint')
+        if actionlint:
+            result = subprocess.run([actionlint, '-shellcheck=', '-pyflakes=', str(self.root / '.github/workflows/deploy.yml')], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return workflow
 
     def test_dry_run_leaves_cache_workflow_ignore_and_index_untouched(self):
         before = self.snapshot()
@@ -81,11 +93,12 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(deploy['concurrency']['group'], 'hostinger-production')
             self.assertIn('workflow_dispatch', deploy['if'])
             steps = deploy['steps']
-            node = next(step for step in steps if step.get('name') == 'Setup Node.js')
+            build = workflow['jobs']['verify' if mode == '-WithTests' else 'build']
+            node = next(step for step in build['steps'] if step.get('name') == 'Setup Node.js')
             self.assertEqual(node['with']['node-version'], '24')
             runs = [step.get('run', '') for step in steps]
             transfer = runs.index('python3 .github/hostinger/deploy.py transfer')
-            check = runs.index('python3 .github/hostinger/check-deploy.py')
+            check = runs.index('python3 .github/hostinger/measure.py http-verification -- python3 .github/hostinger/check-deploy.py')
             cleanup = runs.index('python3 .github/hostinger/deploy.py cleanup')
             self.assertLess(transfer, check)
             self.assertLess(check, cleanup)
@@ -95,6 +108,27 @@ class GeneratorTests(unittest.TestCase):
             self.assertNotIn("steps.verify.outcome == 'success'", cleanup_step['if'])
             self.assertIn("steps.verify.outcome == 'success'", cleanup_step['env']['HOSTINGER_HTTP_VERIFIED'])
             self.assertEqual('verify' in workflow['jobs'], mode == '-WithTests')
+            self.assertNotIn('Setup Node.js', [s.get('name') for s in steps])
+            self.assertNotIn('npm ci', '\n'.join(runs))
+            self.assertEqual(sum(s.get('name') == 'Build frontend once' for job in workflow['jobs'].values() for s in job['steps']), 1)
+            self.assertIn('--no-dev', next(s['run'] for s in steps if s.get('name') == 'Install production PHP dependencies'))
+            quality = [s.get('name') for s in build['steps']]
+            if mode == '-WithTests':
+                self.assertLess(quality.index('Run PHP tests'), quality.index('Seal verified frontend build'))
+            self.assertEqual(deploy['needs'], ['verify' if mode == '-WithTests' else 'build'])
+            artifact = next(s for s in steps if s.get('uses') == 'actions/download-artifact@v4')
+            self.assertIn('outputs.artifact_id', artifact['with']['artifact-ids'])
+            cache = next(s for s in build['steps'] if s.get('id') == 'composer-cache')
+            self.assertIn('runner.os', cache['with']['key'])
+            self.assertIn('php8.3-composer2', cache['with']['key'])
+            self.assertIn("hashFiles('composer.lock')", cache['with']['key'])
+            self.assertNotIn('restore-keys', cache['with'])
+            self.assertEqual(node['with']['cache'], 'npm')
+            self.assertIn('package-lock.json', node['with']['cache-dependency-path'])
+            self.assertIn('.node-cache-runtime', node['with']['cache-dependency-path'])
+            for job in workflow['jobs'].values():
+                checkout = next(s for s in job['steps'] if s.get('uses') == 'actions/checkout@v4')
+                self.assertEqual(checkout['with']['ref'], '${{ github.sha }}')
             if mode == '-WithTests':
                 verify_node = next(s for s in workflow['jobs']['verify']['steps'] if s.get('name') == 'Setup Node.js')
                 self.assertEqual(verify_node['with']['node-version'], '24')
@@ -123,6 +157,8 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(config['max_retained_files'], 10000)
             self.assertEqual(config['max_retained_bytes'], 512 * 1024 * 1024)
             self.assertNotIn('Setup PHP', (self.root / '.github/workflows/deploy.yml').read_text())
+            self.assertTrue(config['require_build_artifact'])
+            self.workflow()
 
     def test_sveltekit_accepts_current_vite_config_location(self):
         (self.root / 'vite.config.ts').write_text("import adapter from '@sveltejs/adapter-static'; export default {}")
@@ -146,6 +182,86 @@ class GeneratorTests(unittest.TestCase):
             result = self.generate('-WithoutTests', '-Force')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(install, (self.root / '.github/workflows/deploy.yml').read_text())
+            steps = self.workflow()['jobs']['build']['steps']
+            if manager in ('pnpm', 'yarn'):
+                activation = next(i for i, s in enumerate(steps) if s.get('name') == 'Activate package manager')
+                cache = next(i for i, s in enumerate(steps) if s.get('id') == 'node')
+                self.assertLess(activation, cache)
+                self.assertEqual(steps[cache]['with']['cache'], manager)
+            else:
+                cache = next(s for s in steps if s.get('id') == 'node')
+                self.assertEqual(cache['with']['path'], '${{ runner.temp }}/bun-download-cache')
+                self.assertNotIn('node_modules', cache['with']['path'])
+
+    def test_missing_composer_lock_is_rejected_without_mutation(self):
+        (self.root / 'composer.lock').unlink()
+        before = self.snapshot()
+        result = self.generate('-WithoutTests')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Commit composer.lock', result.stderr)
+        self.assertEqual(before, self.snapshot())
+
+    def test_custom_build_command_and_php_web_user_are_preserved(self):
+        command = "npm run build && printf '%s' done"
+        result = self.generate('-WithTests', '-BuildCommand', command, '-PhpWebUser', 'audited-user')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        steps = self.workflow()['jobs']['verify']['steps']
+        build = next(s for s in steps if s.get('name') == 'Build frontend once')
+        self.assertEqual(build['env']['FRONTEND_BUILD_COMMAND'], command)
+        profile = json.loads((self.root / '.github/hostinger/profile.json').read_text())
+        self.assertEqual(profile['php_web_user'], 'audited-user')
+        self.assertTrue((self.root / '.github/hostinger/build_artifact.py').exists())
+        self.assertTrue((self.root / '.github/hostinger/measure.py').exists())
+        ignore = (self.root / '.gitignore').read_text()
+        for name in ('frontend-artifact', 'deploy-diagnostics', '.node-cache-runtime'):
+            self.assertIn(name, ignore)
+
+    def test_custom_static_profile_with_types_and_frontend_tests_is_gated(self):
+        self.package['scripts'].update({'types:check': 'svelte-check', 'test:ci': 'node --test'})
+        self.write_package()
+        result = self.generate('-Profile', 'static', '-OutputDir', 'site/output', '-ImmutableDirs', 'chunks', '-WithTests')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        workflow = self.workflow()
+        steps = workflow['jobs']['verify']['steps']
+        names = [s.get('name') for s in steps]
+        for name in ('Check frontend lint', 'Check frontend types', 'Run frontend tests'):
+            self.assertLess(names.index(name), names.index('Seal verified frontend build'))
+        deploy = workflow['jobs']['deploy']
+        self.assertFalse(any(s.get('uses') == 'actions/setup-node@v4' for s in deploy['steps']))
+        self.assertNotIn('composer', '\n'.join(s.get('run', '') for s in deploy['steps']))
+
+    def test_dependency_cache_scope_changes_with_runtime_and_lockfile(self):
+        self.assertEqual(self.generate('-WithTests', '-NodeVersion', '22', '-PhpVersion', '8.3').returncode, 0)
+        first = self.workflow()['jobs']['verify']['steps']
+        self.assertEqual(self.generate('-WithTests', '-Force', '-NodeVersion', '24', '-PhpVersion', '8.4').returncode, 0)
+        second = self.workflow()['jobs']['verify']['steps']
+        composer_key = lambda steps: next(s['with']['key'] for s in steps if s.get('id') == 'composer-cache')
+        node_marker = lambda steps: next(s['run'] for s in steps if s.get('name') == 'Scope frontend download cache to runtime')
+        self.assertNotEqual(composer_key(first), composer_key(second))
+        self.assertNotEqual(node_marker(first), node_marker(second))
+        for filename in ('composer.lock', 'package-lock.json'):
+            before = hashlib.sha256((self.root / filename).read_bytes()).hexdigest()
+            (self.root / filename).write_text('{"changed":true}')
+            after = hashlib.sha256((self.root / filename).read_bytes()).hexdigest()
+            self.assertNotEqual(before, after)
+        self.assertIn("hashFiles('composer.lock')", composer_key(second))
+        node = next(s for s in second if s.get('id') == 'node')
+        self.assertIn('package-lock.json', node['with']['cache-dependency-path'])
+        installs = '\n'.join(s.get('run', '') for s in second if s.get('name', '').startswith('Install'))
+        self.assertIn('npm ci', installs)
+        self.assertIn('composer install', installs)
+        self.assertNotIn('if:', installs)
+
+    def test_moving_lts_selector_uses_resolved_runtime_in_download_cache(self):
+        result = self.generate('-WithoutTests', '-NodeVersion', 'lts/*')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        steps = self.workflow()['jobs']['build']['steps']
+        setup = next(i for i, s in enumerate(steps) if s.get('name') == 'Setup Node.js')
+        marker = next(i for i, s in enumerate(steps) if s.get('name') == 'Scope frontend download cache to runtime')
+        cache = next(i for i, s in enumerate(steps) if s.get('id') == 'node')
+        self.assertLess(setup, marker)
+        self.assertLess(marker, cache)
+        self.assertIn('$(node --version)', steps[marker]['run'])
 
     def test_failed_secret_command_stops_and_key_uses_stdin(self):
         key = self.root / 'fake-private-key'

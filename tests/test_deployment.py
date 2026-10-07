@@ -6,6 +6,7 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,6 +14,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 SCRATCH = ROOT / '.test-output'
 SCRATCH.mkdir(exist_ok=True)
+sys.path.insert(0, str(ROOT / 'bin'))
+import measure
 
 
 def load(name, filename):
@@ -57,6 +60,9 @@ def make_local_ssh(path):
 
 class DeploymentTests(unittest.TestCase):
     def setUp(self):
+        recording = patch.object(measure, 'record')
+        recording.start()
+        self.addCleanup(recording.stop)
         self.temp = tempfile.TemporaryDirectory(dir=SCRATCH)
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -168,6 +174,9 @@ BASH = os.environ.get('TEST_BASH') or (r'C:\Program Files\Git\bin\bash.exe' if o
 @unittest.skipUnless(BASH and Path(BASH).exists(), 'Bash is required for remote integration tests')
 class RemoteTests(unittest.TestCase):
     def setUp(self):
+        recording = patch.object(measure, 'record')
+        recording.start()
+        self.addCleanup(recording.stop)
         self.temp = tempfile.TemporaryDirectory(dir=SCRATCH)
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -326,6 +335,12 @@ class RemoteTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name != 'nt' and shutil.which('rsync'), 'Linux rsync required for end-to-end transfer')
 class RsyncIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        for module in (measure, deploy):
+            recording = patch.object(module, 'record')
+            recording.start()
+            self.addCleanup(recording.stop)
+
     def test_two_releases_preserve_old_chunks_and_production_data(self):
         with tempfile.TemporaryDirectory(dir=SCRATCH) as directory:
             root = Path(directory)

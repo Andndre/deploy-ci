@@ -36,6 +36,8 @@ param (
 
     [string]$PhpVersion = "",
 
+    [string]$PhpWebUser = 'auto',
+
     [string]$NodeVersion = "",
 
     [ValidateSet('laravel-vite', 'static-vite', 'sveltekit-static', 'static')]
