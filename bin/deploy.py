@@ -65,6 +65,27 @@ def asset_inventory(source, directories):
     return "\n".join(lines)
 
 
+def parse_rsync_stats(output):
+    patterns = {
+        "files_listed": r"Number of files:\s*([0-9,]+)",
+        "files_created": r"Number of created files:\s*([0-9,]+)",
+        "files_deleted": r"Number of deleted files:\s*([0-9,]+)",
+        "files_transferred": r"Number of regular files transferred:\s*([0-9,]+)",
+        "total_file_size": r"Total file size:\s*([0-9,]+)",
+        "total_transferred_size": r"Total transferred file size:\s*([0-9,]+)",
+        "literal_data": r"Literal data:\s*([0-9,]+)",
+        "matched_data": r"Matched data:\s*([0-9,]+)",
+        "bytes_sent": r"Total bytes sent:\s*([0-9,]+)",
+        "bytes_received": r"Total bytes received:\s*([0-9,]+)",
+    }
+    stats = {}
+    for key, pattern in patterns.items():
+        match = re.search(pattern, output)
+        if match:
+            stats[key] = int(match.group(1).replace(",", ""))
+    return stats
+
+
 class Deployment:
     def __init__(self, config, environment=None):
         self.config = config
@@ -115,7 +136,7 @@ class Deployment:
                 stream.write(value + "\n")
             path.chmod(0o600)
 
-    def remote(self, phase, run, inventory=None, incoming_bytes=0):
+    def remote(self, phase, run, inventory=None, incoming_bytes=0, composer_lock_hash="", force_vendor_sync=False):
         script = Path(__file__).with_name("remote-deploy.sh").read_text(encoding="utf-8")
         if inventory is not None:
             script = "incoming=$(cat <<'HOSTINGER_ASSET_INVENTORY'\n" + inventory + "\nHOSTINGER_ASSET_INVENTORY\n)\n" + script
@@ -127,7 +148,9 @@ class Deployment:
                      self.config.get("php_version", ""),
                      str(self.env.get("HOSTINGER_HTTP_VERIFIED", "false")).lower(),
                      str(self.config.get("maintenance", False)).lower(),
-                     self.config.get("php_web_user", "auto")]
+                     self.config.get("php_web_user", "auto"),
+                     composer_lock_hash,
+                     str(force_vendor_sync).lower()]
         with timed("remote-" + phase):
             started = time.monotonic()
             remote_seconds = 0
@@ -139,6 +162,8 @@ class Deployment:
                 for line in process.stdout:
                     if line.startswith("HOSTINGER_TIMING "):
                         metric = json.loads(line.removeprefix("HOSTINGER_TIMING "))
+                        if metric.get("stage") == "vendor-reusable":
+                            self.vendor_reusable = bool(metric.get("reusable", False))
                         remote_seconds += metric["seconds"]
                         record(**metric)
                     else:
@@ -149,16 +174,39 @@ class Deployment:
                 if code:
                     raise subprocess.CalledProcessError(code, process.args)
 
-    def rsync(self, source, target, excludes=(), delete=False):
+    def rsync(self, source, target, excludes=(), delete=False, *, includes=(), stage_name=None):
+        stage = stage_name or ("rsync-assets" if not delete else "rsync-application")
         command = ["rsync", "-rlzp", "--chmod=Du=rwx,Dgo=rx,Fu=rwX,Fgo=rX",
                    "--checksum", "--delay-updates", "--safe-links", "--protect-args",
+                   "--stats",
                    "-e", shlex.join(self.ssh)]
+        bwlimit = str(self.secret("HOSTINGER_RSYNC_BWLIMIT") or self.config.get("rsync_bwlimit", "")).strip()
+        if bwlimit and bwlimit != "0":
+            if not re.fullmatch(r"[0-9]+[kKmMgGtT]?", bwlimit):
+                raise ValueError(f"Invalid rsync bwlimit format: {bwlimit!r}")
+            command.append(f"--bwlimit={bwlimit}")
         if delete:
             command.append("--delete-delay")
+        command.extend(f"--include=/{value}" for value in includes)
         command.extend(f"--exclude=/{value}" for value in excludes)
         command.extend([str(source) + "/", self.rsync_destination + ":" + target + "/"])
-        with timed("rsync-assets" if not delete else "rsync-application"):
-            subprocess.run(command, check=True)
+        started = time.monotonic()
+        outcome = "failure"
+        stats = {}
+        try:
+            process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            if process.returncode != 0:
+                print(f"Rsync {stage} failed with exit code {process.returncode}:\n{process.stdout}", flush=True)
+                raise subprocess.CalledProcessError(process.returncode, command, output=process.stdout)
+            outcome = "success"
+            stats = parse_rsync_stats(process.stdout)
+            summary = (f"Rsync {stage} complete: {stats.get('files_transferred', 0)} files transferred of "
+                       f"{stats.get('files_listed', 0)} listed, sent {stats.get('bytes_sent', 0)} bytes, "
+                       f"received {stats.get('bytes_received', 0)} bytes")
+            print(summary, flush=True)
+            return stats
+        finally:
+            record(stage, time.monotonic() - started, outcome, **stats)
 
     def transfer(self):
         if self.config.get("require_build_artifact", False):
@@ -173,18 +221,28 @@ class Deployment:
         inventory = asset_inventory(self.source, self.directories)
         run = uuid.uuid4().hex
         incoming_bytes = sum((self.source / line.split("  ", 1)[1]).stat().st_size for line in inventory.splitlines())
+        composer_lock_file = self.source / "composer.lock"
+        composer_lock_hash = digest(composer_lock_file) if composer_lock_file.is_file() else ""
+        force_vendor_sync = str(self.secret("HOSTINGER_FORCE_VENDOR_SYNC") or self.config.get("force_vendor_sync", False)).lower() == "true"
         print("Deployment stage: remote prerequisites, asset collisions and retention budget", flush=True)
-        self.remote("prepare", run, inventory, incoming_bytes)
+        self.remote("prepare", run, inventory, incoming_bytes, composer_lock_hash, force_vendor_sync)
         self.state.write_text(json.dumps({"run": run}), encoding="utf-8")
         # Immutable files arrive before any manifest/HTML/application publication.
         for directory in self.directories:
             print(f"Deployment stage: upload immutable assets ({directory})", flush=True)
             self.rsync(self.source / directory, self.target + "/" + directory)
+        includes = []
+        excludes = list(self.config["protected_paths"]) + list(self.directories)
+        if self.config.get("profile") == "laravel-vite" and getattr(self, "vendor_reusable", False):
+            print("Deployment stage: production vendor matches verified composer.lock; syncing autoloader metadata while preserving packages", flush=True)
+            includes.extend(["vendor", "vendor/autoload.php", "vendor/composer/***"])
+            excludes.append("vendor/***")
+        elif self.config.get("profile") == "laravel-vite":
+            print("Deployment stage: vendor dependencies changed or unverified; synchronizing vendor with checksum", flush=True)
         print("Deployment stage: publish application files and manifests (in place)", flush=True)
-        self.rsync(self.source, self.target,
-                   excludes=self.config["protected_paths"] + self.directories, delete=True)
+        self.rsync(self.source, self.target, excludes=excludes, includes=includes, delete=True)
         print("Application transfer complete; remote optimization follows", flush=True)
-        self.remote("optimize", run)
+        self.remote("optimize", run, composer_lock_hash=composer_lock_hash)
 
     def cleanup(self):
         self.remote("cleanup", json.loads(self.state.read_text(encoding="utf-8"))["run"])

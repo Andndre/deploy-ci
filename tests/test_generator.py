@@ -89,6 +89,11 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             workflow = self.workflow()
             deploy = workflow['jobs']['deploy']
+            for name in ('HOSTINGER_RSYNC_BWLIMIT', 'HOSTINGER_FORCE_VENDOR_SYNC'):
+                self.assertEqual(deploy['env'][name], '${{ secrets.' + name + ' }}')
+            config = json.loads((self.root / '.github/hostinger/profile.json').read_text())
+            self.assertEqual(config['rsync_bwlimit'], '0')
+            self.assertFalse(config['force_vendor_sync'])
             self.assertEqual(deploy['concurrency']['cancel-in-progress'], 'false')
             self.assertEqual(deploy['concurrency']['group'], 'hostinger-production')
             self.assertIn('workflow_dispatch', deploy['if'])
@@ -134,6 +139,25 @@ class GeneratorTests(unittest.TestCase):
                 self.assertEqual(verify_node['with']['node-version'], '24')
         self.assertEqual(self.git('ls-files', '--', 'public/build').strip(), '')
         self.assertTrue((self.root / 'public/build/assets/old-12345678.js').exists())
+
+    def test_vendor_sync_and_bandwidth_options_survive_generation(self):
+        result = self.generate('-WithoutTests', '-RsyncBwlimit', '250K', '-ForceVendorSync')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        profile = json.loads((self.root / '.github/hostinger/profile.json').read_text())
+        self.assertEqual(profile['rsync_bwlimit'], '250K')
+        self.assertTrue(profile['force_vendor_sync'])
+        self.workflow()
+        for helper in ('deploy.py', 'remote-deploy.sh'):
+            self.assertEqual((self.root / '.github/hostinger' / helper).read_text().rstrip(),
+                             (ROOT / 'bin' / helper).read_text().rstrip())
+
+    def test_invalid_bandwidth_options_leave_project_untouched(self):
+        before = self.snapshot()
+        for value in ('-1', '10.5', '250 --delete', 'unlimited'):
+            with self.subTest(value=value):
+                result = self.generate('-WithoutTests', '-RsyncBwlimit', value)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(before, self.snapshot())
 
     def test_replacement_requires_force_and_shows_diff_before_any_mutation(self):
         self.assertEqual(self.generate('-WithoutTests').returncode, 0)

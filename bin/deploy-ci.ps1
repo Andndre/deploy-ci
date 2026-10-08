@@ -54,6 +54,11 @@ param (
 
     [string]$BuildCommand = '',
 
+    [ValidatePattern('^[0-9]+[kKmMgGtT]?$')]
+    [string]$RsyncBwlimit = '0',
+
+    [switch]$ForceVendorSync,
+
     [string]$DeployUrl = '',
 
     [string]$PageContains = '',

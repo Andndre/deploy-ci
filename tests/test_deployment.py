@@ -63,6 +63,9 @@ class DeploymentTests(unittest.TestCase):
         recording = patch.object(measure, 'record')
         recording.start()
         self.addCleanup(recording.stop)
+        transfer_recording = patch.object(deploy, 'record')
+        transfer_recording.start()
+        self.addCleanup(transfer_recording.stop)
         self.temp = tempfile.TemporaryDirectory(dir=SCRATCH)
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -78,8 +81,8 @@ class DeploymentTests(unittest.TestCase):
     def test_immutable_transfer_precedes_application_and_cleanup_is_separate(self):
         instance = deploy.Deployment(self.config, self.env)
         events = []
-        instance.remote = lambda phase, *args: events.append(('remote', phase))
-        instance.rsync = lambda source, target, excludes=(), delete=False: events.append(('rsync', str(source), excludes, delete))
+        instance.remote = lambda phase, *args, **kwargs: events.append(('remote', phase))
+        instance.rsync = lambda source, target, excludes=(), delete=False, **kwargs: events.append(('rsync', str(source), excludes, delete))
         instance.transfer()
         self.assertEqual(events[0], ('remote', 'prepare'))
         self.assertEqual(events[1], ('rsync', str(self.output / 'assets'), (), False))
@@ -134,7 +137,7 @@ class DeploymentTests(unittest.TestCase):
 
     def test_rsync_preserves_immutable_directory_and_persistent_data(self):
         instance = deploy.Deployment(self.config, self.env)
-        with patch.object(deploy.subprocess, 'run') as run:
+        with patch.object(deploy.subprocess, 'run', return_value=subprocess.CompletedProcess(['rsync'], 0, stdout='')) as run:
             instance.rsync(self.output, instance.target, ['uploads', '.env*', 'assets'], True)
         command = run.call_args.args[0]
         self.assertIn('--delete-delay', command)
@@ -177,6 +180,9 @@ class RemoteTests(unittest.TestCase):
         recording = patch.object(measure, 'record')
         recording.start()
         self.addCleanup(recording.stop)
+        transfer_recording = patch.object(deploy, 'record')
+        transfer_recording.start()
+        self.addCleanup(transfer_recording.stop)
         self.temp = tempfile.TemporaryDirectory(dir=SCRATCH)
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -340,6 +346,9 @@ class RsyncIntegrationTests(unittest.TestCase):
             recording = patch.object(module, 'record')
             recording.start()
             self.addCleanup(recording.stop)
+        transfer_recording = patch.object(deploy, 'record')
+        transfer_recording.start()
+        self.addCleanup(transfer_recording.stop)
 
     def test_two_releases_preserve_old_chunks_and_production_data(self):
         with tempfile.TemporaryDirectory(dir=SCRATCH) as directory:

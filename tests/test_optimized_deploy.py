@@ -62,6 +62,9 @@ class ArtifactTests(unittest.TestCase):
         recording = patch.object(measure, 'record')
         recording.start()
         self.addCleanup(recording.stop)
+        transfer_recording = patch.object(deploy, 'record')
+        transfer_recording.start()
+        self.addCleanup(transfer_recording.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -267,6 +270,9 @@ class RemoteTests(unittest.TestCase):
         recording = patch.object(measure, 'record')
         recording.start()
         self.addCleanup(recording.stop)
+        transfer_recording = patch.object(deploy, 'record')
+        transfer_recording.start()
+        self.addCleanup(transfer_recording.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -300,11 +306,11 @@ else:
         self.asset.write_text('new')
         self.inventory = artifact.digest(self.asset) + '  public/build/assets/' + self.asset.name
 
-    def execute(self, phase, verified=True, max_files=10000, php_version='', **environment):
+    def execute(self, phase, verified=True, max_files=10000, php_version='', composer_lock_hash='', force_vendor_sync=False, **environment):
         script = "incoming='" + self.inventory + "'\n" + self.script
         return subprocess.run(['bash', '-s', '--', str(self.target), phase, self.run, 'public/build/assets',
                                '2', '7', 'laravel-vite', 'true', str(max_files), '536870912', '3', php_version, str(verified).lower(), 'true',
-                               pwd.getpwuid(os.getuid()).pw_name], input=script, text=True, capture_output=True,
+                               pwd.getpwuid(os.getuid()).pw_name, composer_lock_hash, str(force_vendor_sync).lower()], input=script, text=True, capture_output=True,
                               env=self.env | environment)
 
     def test_new_writable_roots_and_maintenance_success_with_stage_timings(self):
@@ -318,7 +324,116 @@ else:
         for stage in ('storage-permissions', 'public-permissions', 'migration', 'cache-build'):
             self.assertIn('"stage":"' + stage + '"', result.stdout)
         self.assertEqual((self.target / 'commands.log').read_text().splitlines(),
-                         ['down', 'optimize:clear', 'migrate', 'config:cache', 'route:cache', 'view:cache', 'up'])
+                         ['down', 'migrate', 'optimize:clear', 'config:cache', 'route:cache', 'view:cache', 'up'])
+
+    def vendor_fixture(self):
+        lock = self.target / 'composer.lock'
+        lock.write_text('{"fixture":"unchanged production lock"}')
+        autoload = self.target / 'vendor/autoload.php'
+        autoload.parent.mkdir(exist_ok=True)
+        autoload.write_text('<?php // fixture entry point')
+        return artifact.digest(lock)
+
+    def test_vendor_marker_is_created_after_optimization_and_enables_warm_reuse(self):
+        lock_hash = self.vendor_fixture()
+        cold = self.execute('prepare', composer_lock_hash=lock_hash)
+        self.assertEqual(cold.returncode, 0, cold.stderr)
+        self.assertIn('"reusable":false', cold.stdout)
+        marker = self.state / 'vendor-lock'
+        self.assertFalse(marker.exists())
+        optimized = self.execute('optimize', composer_lock_hash=lock_hash)
+        self.assertEqual(optimized.returncode, 0, optimized.stderr)
+        self.assertEqual(marker.read_text().strip(), lock_hash)
+        warm = self.execute('prepare', composer_lock_hash=lock_hash)
+        self.assertEqual(warm.returncode, 0, warm.stderr)
+        self.assertIn('"reusable":true', warm.stdout)
+
+    def test_forced_sync_invalidates_marker_and_incomplete_sync_cannot_be_reused(self):
+        lock_hash = self.vendor_fixture()
+        self.assertEqual(self.execute('prepare', composer_lock_hash=lock_hash).returncode, 0)
+        self.assertEqual(self.execute('optimize', composer_lock_hash=lock_hash).returncode, 0)
+        forced = self.execute('prepare', composer_lock_hash=lock_hash, force_vendor_sync=True)
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        self.assertIn('"reusable":false', forced.stdout)
+        self.assertFalse((self.state / 'vendor-lock').exists())
+        retry = self.execute('prepare', composer_lock_hash=lock_hash)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertIn('"reusable":false', retry.stdout)
+        for command in ('migrate', 'config:cache'):
+            with self.subTest(command=command):
+                failed = self.execute('optimize', composer_lock_hash=lock_hash, FAIL_COMMAND=command)
+                self.assertNotEqual(failed.returncode, 0)
+                self.assertFalse((self.state / 'vendor-lock').exists())
+
+    def test_changed_lock_missing_autoload_and_wrong_marker_require_full_sync(self):
+        lock_hash = self.vendor_fixture()
+        self.assertEqual(self.execute('prepare', composer_lock_hash=lock_hash).returncode, 0)
+        marker = self.state / 'vendor-lock'
+        for condition in ('changed-lock', 'missing-autoload', 'wrong-marker'):
+            with self.subTest(condition=condition):
+                lock_hash = self.vendor_fixture()
+                marker.write_text(lock_hash + '\n')
+                if condition == 'changed-lock':
+                    (self.target / 'composer.lock').write_text('target lock changed')
+                elif condition == 'missing-autoload':
+                    (self.target / 'vendor/autoload.php').unlink()
+                else:
+                    marker.write_text('0' * 64 + '\n')
+                result = self.execute('prepare', composer_lock_hash=lock_hash)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('"reusable":false', result.stdout)
+                self.assertFalse(marker.exists())
+
+    def test_warm_deployment_refreshes_classmap_without_scanning_packages(self):
+        from test_deployment import make_local_ssh
+        source = self.root / 'source'
+        def put(path, content):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        put(source / 'public/build/assets/new-abcdefgh.js', 'new asset')
+        put(source / 'public/build/manifest.json', '{}')
+        put(source / 'composer.lock', '{"fixture":"same lock"}')
+        put(source / 'artisan', '<?php // fixture')
+        put(source / 'app/Old.php', '<?php // old application class')
+        put(source / 'vendor/autoload.php', '<?php // old autoload')
+        put(source / 'vendor/composer/autoload_classmap.php', 'app/Old.php')
+        for index in range(80):
+            put(source / f'vendor/package/file-{index}.php', f'package byte {index}')
+        config = CONFIG | dict(output_dir=str(source), require_build_artifact=False,
+                               php_web_user=pwd.getpwuid(os.getuid()).pw_name)
+        env = dict(HOSTINGER_TARGET_DIR=str(self.target), HOSTINGER_SSH_HOST='example.test',
+                   HOSTINGER_SSH_USER='test', RUNNER_TEMP=str(self.root))
+        instance = deploy.Deployment(config, env)
+        instance.ssh = [str(make_local_ssh(self.root / 'local-ssh'))]
+        with patch.dict(os.environ, self.env), patch.object(deploy, 'record') as metrics:
+            instance.transfer()
+            cold = next(call.kwargs['files_listed'] for call in metrics.call_args_list
+                        if call.args and call.args[0] == 'rsync-application')
+            package = self.target / 'vendor/package/file-0.php'
+            package_mtime = package.stat().st_mtime_ns
+            put(self.target / 'vendor/package/local-only.php', 'preserved package file')
+            put(self.target / 'vendor/composer/obsolete.php', 'obsolete metadata')
+            (source / 'app/Old.php').unlink()
+            put(source / 'app/Services/Moved.php', '<?php // moved application class')
+            put(source / 'vendor/autoload.php', '<?php // new autoload')
+            put(source / 'vendor/composer/autoload_classmap.php', 'app/Services/Moved.php')
+            put(source / 'vendor/composer/sub/nested.php', 'nested metadata')
+            metrics.reset_mock()
+            instance.transfer()
+            warm = next(call.kwargs['files_listed'] for call in metrics.call_args_list
+                        if call.args and call.args[0] == 'rsync-application')
+        self.assertTrue(instance.vendor_reusable)
+        self.assertLess(warm, cold - 70)
+        self.assertEqual((self.target / 'vendor/composer/autoload_classmap.php').read_text(), 'app/Services/Moved.php')
+        self.assertEqual((self.target / 'vendor/autoload.php').read_text(), '<?php // new autoload')
+        self.assertTrue((self.target / 'vendor/composer/sub/nested.php').exists())
+        self.assertFalse((self.target / 'vendor/composer/obsolete.php').exists())
+        self.assertFalse((self.target / 'app/Old.php').exists())
+        self.assertTrue((self.target / 'app/Services/Moved.php').exists())
+        self.assertEqual(package.stat().st_mtime_ns, package_mtime)
+        self.assertEqual(package.read_text(), 'package byte 0')
+        self.assertTrue((self.target / 'vendor/package/local-only.php').exists())
+        self.assertTrue((self.target / '.env').exists())
 
     def test_hostinger_php_selector_is_used_for_identity_probes_and_artisan(self):
         alternate = self.tools / 'selected-php'

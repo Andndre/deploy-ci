@@ -70,6 +70,8 @@ Deploying modern Laravel applications (Vite, Inertia, Pest, SQLite/MySQL) to sha
 * **Reviewable generation:** `-DryRun` leaves files, cache, Git index and secrets untouched. Existing generated files show a diff; noninteractive replacement requires `-Force`. `-NodeVersion` overrides detection in both pipeline modes.
 * **Stage results:** The workflow summary separates transfer/optimization, public HTTP verification and cleanup. An HTTP failure keeps the workflow red but does not imply that uploaded files were rolled back or never published.
 * **One frontend build per run:** The quality job (or lean build job) builds the checked-out commit, validates the complete output, then uploads an artifact. Deployment restores that exact run/commit artifact and checks its SHA-256 before SSH; it does not install frontend dependencies or rebuild. Laravel production dependencies still use `composer install --no-dev`.
+* **Warm Laravel dependency reuse:** Matching recorded and target `composer.lock` hashes allow package reuse without checksumming the whole vendor tree. `vendor/autoload.php` and `vendor/composer/` still synchronize on every deployment so application classmaps remain current. Initial, changed, unverified or forced deployments use a full checksum sync; its marker is invalidated before transfer and written again only after successful optimization.
+* **Transfer diagnostics:** Rsync records file counts, transferred sizes and network bytes in timing artifacts and prints detailed output when transfer fails.
 * **Download caches and timings:** npm/pnpm/Yarn use `setup-node` download caches; Bun and Composer use download-directory caches. Keys include OS, runtime and lockfile inputs. Frozen installs always run. `HOSTINGER_TIMING` records install/cache-hit, build, artifact restore, remote preparation, bounded permission checks, transfers, migrations, caches and HTTP verification in job summaries and JSONL artifacts (14 days). Remote totals include their nested stages; SSH overhead also includes script transport and uninstrumented work.
 
 ---
@@ -100,6 +102,8 @@ deploy-ci -Profile static-vite -NonInteractive -SkipSecrets `
 deploy-ci -Profile sveltekit-static -NonInteractive -SkipSecrets `
   -DeployUrl https://example.com
 ```
+
+Use `-RsyncBwlimit 250K` to limit rsync socket bandwidth, or `0` (the default) to disable it. This does not cap disk IOPS or checksum work. For Laravel, `-ForceVendorSync` disables dependency reuse for the generated profile. Optional GitHub secrets `HOSTINGER_RSYNC_BWLIMIT` and `HOSTINGER_FORCE_VENDOR_SYNC` override the profile at runtime; set the latter to `true` or `false`. Changing installed packages outside CI requires a forced synchronization to restore them.
 
 Commit `.github/hostinger/` alongside `.github/workflows/deploy.yml`; it contains four Python helpers, one Bash script and the profile JSON. The generated workflow executes these reviewable, versioned files. Reinstall the CLI to get its new helper files. Review the displayed diff before replacing an existing workflow with `-Force`. Laravel generation requires committed `composer.lock`; frontend artifacts and timing outputs are added to `.gitignore`.
 
@@ -136,7 +140,7 @@ Old-browser asset requests are supported within the retention policy, not indefi
 uv run python -m unittest discover -s tests -v
 ```
 
-Tests cover generator immutability and replacement, both workflow modes, package managers/cache scopes, artifact integrity and output profiles, failed secret commands, remote ownership/permission/maintenance failures, collision/path/retention behavior, and HTTP failures. Linux tests run actual rsync transfers and a jail without `/dev/fd`. CI also validates generated workflows with actionlint and the remote script with ShellCheck. Set `POWERSHELL_EXE` to run the generator tests with Windows PowerShell 5.1; Windows remote-script tests use Git Bash.
+Tests cover generator immutability and replacement, both workflow modes, package managers/cache scopes, artifact integrity and output profiles, failed secret commands, remote ownership/permission/maintenance failures, collision/path/retention behavior, and HTTP failures. Vendor reuse regressions cover cold/warm transfers, classmap refresh, marker invalidation and retry, bandwidth/force overrides, and detailed rsync failures. Linux tests run actual rsync transfers and a jail without `/dev/fd`. CI also validates generated workflows with actionlint and the remote script with ShellCheck. Set `POWERSHELL_EXE` to run the generator tests with Windows PowerShell 5.1; Windows remote-script tests use Git Bash.
 
 ---
 

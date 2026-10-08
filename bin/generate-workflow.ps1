@@ -455,6 +455,8 @@ jobs:
       HOSTINGER_SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
       HOSTINGER_SSH_KNOWN_HOSTS: ${{ secrets.HOSTINGER_SSH_KNOWN_HOSTS }}
       HOSTINGER_TARGET_DIR: ${{ secrets.HOSTINGER_TARGET_DIR }}
+      HOSTINGER_RSYNC_BWLIMIT: ${{ secrets.HOSTINGER_RSYNC_BWLIMIT }}
+      HOSTINGER_FORCE_VENDOR_SYNC: ${{ secrets.HOSTINGER_FORCE_VENDOR_SYNC }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -519,6 +521,8 @@ $profileConfig = [ordered]@{
     max_assets = 6
     package_manager = $PackageManager
     build_command = $BuildCommand
+    rsync_bwlimit = $RsyncBwlimit
+    force_vendor_sync = [bool]$ForceVendorSync
 }
 $files = [ordered]@{ '.github/workflows/deploy.yml' = $workflowContent; '.github/hostinger/profile.json' = ($profileConfig | ConvertTo-Json -Depth 5) }
 foreach ($helper in @('deploy.py', 'remote-deploy.sh', 'check-deploy.py', 'build_artifact.py', 'measure.py')) {

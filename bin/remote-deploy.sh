@@ -16,6 +16,8 @@ php_expected=${12:-}
 http_verified=${13:-false}
 maintenance=${14:-false}
 php_web_user=${15:-auto}
+composer_lock_hash=${16:-}
+force_vendor_sync=${17:-false}
 php_bin="php"
 if [[ -n "$php_expected" ]]; then
   version_clean="${php_expected//./}"
@@ -262,6 +264,22 @@ case "$phase" in
     fi
     printf '%s\n' "$incoming" > "$state/pending/$run.txt"
     for dir in "${asset_dirs[@]}"; do (umask 022; mkdir -p -- "$dir"); done
+    vendor_reusable=false
+    if [[ "$profile" == laravel-vite && "$force_vendor_sync" != true && -n "$composer_lock_hash" ]]; then
+      if [[ -f "$state/vendor-lock" && -f "$target/composer.lock" && -f "$target/vendor/autoload.php" ]]; then
+        saved_vendor_lock=$(cat "$state/vendor-lock" 2>/dev/null || true)
+        if [[ "$saved_vendor_lock" == "$composer_lock_hash" ]]; then
+          target_lock_hash=$(sha256sum -- "$target/composer.lock" 2>/dev/null | cut -d ' ' -f 1 || true)
+          if [[ "$target_lock_hash" == "$composer_lock_hash" ]]; then
+            vendor_reusable=true
+          fi
+        fi
+      fi
+    fi
+    if [[ "$vendor_reusable" != true ]]; then
+      rm -f -- "$state/vendor-lock"
+    fi
+    printf 'HOSTINGER_TIMING {"stage":"vendor-reusable","seconds":0.000,"outcome":"success","reusable":%s}\n' "$vendor_reusable"
     finish_stage
     if [[ "$profile" == laravel-vite && "$maintenance" == true && -f artisan ]]; then
       start_stage maintenance-down
@@ -287,15 +305,15 @@ case "$phase" in
         "$php_bin" artisan key:generate --force
         finish_stage
       fi
-      start_stage cache-clear
-      "$php_bin" artisan optimize:clear
-      finish_stage
       if [[ "$migrate" == true ]]; then
         start_stage migration
         echo 'Explicit database migration option enabled; failures are not automatically rolled back'
         "$php_bin" artisan migrate --force
         finish_stage
       fi
+      start_stage cache-clear
+      "$php_bin" artisan optimize:clear
+      finish_stage
       start_stage cache-build
       "$php_bin" artisan config:cache
       "$php_bin" artisan route:cache
@@ -306,6 +324,12 @@ case "$phase" in
         echo 'Exiting maintenance mode after deployment'
         "$php_bin" artisan up
         finish_stage
+      fi
+      if [[ -n "$composer_lock_hash" && -f "$target/composer.lock" && -f "$target/vendor/autoload.php" ]]; then
+        target_lock_hash=$(sha256sum -- "$target/composer.lock" 2>/dev/null | cut -d ' ' -f 1 || true)
+        if [[ "$target_lock_hash" == "$composer_lock_hash" ]]; then
+          printf '%s\n' "$composer_lock_hash" > "$state/vendor-lock"
+        fi
       fi
     fi
     ;;
